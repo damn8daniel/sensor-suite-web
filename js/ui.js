@@ -11,11 +11,24 @@ window.SensorUI = (function () {
   }
   function modal(title, bodyHTML){
     const bg = document.createElement('div'); bg.className='modal-bg';
-    bg.innerHTML = `<div class="modal"><h3>${escape(title)}</h3><div class="modal-body"></div></div>`;
+    bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${escape(title)}">`+
+                   `<button class="modal-x" type="button" aria-label="Закрыть">×</button>`+
+                   `<h3>${escape(title)}</h3><div class="modal-body"></div></div>`;
     bg.querySelector('.modal-body').innerHTML = bodyHTML || '';
+    let closed = false;
     bg.addEventListener('click', e=>{ if(e.target===bg) close(); });
+    bg.querySelector('.modal-x').addEventListener('click', close);
+    function onKey(e){ if(e.key==='Escape'){ e.stopPropagation(); close(); } }
+    document.addEventListener('keydown', onKey, true);
     document.body.appendChild(bg);
-    function close(){ bg.remove(); }
+    requestAnimationFrame(()=>bg.classList.add('show'));
+    function close(){
+      if(closed) return; closed = true;
+      document.removeEventListener('keydown', onKey, true);
+      bg.dispatchEvent(new CustomEvent('modal:close'));
+      bg.classList.remove('show');
+      setTimeout(()=>bg.remove(), 160);
+    }
     return { el: bg, body: bg.querySelector('.modal-body'), close };
   }
   function download(filename, blob){
@@ -30,6 +43,205 @@ window.SensorUI = (function () {
   function card(title, hint, bodyHTML){
     return `<div class="card"><h3>${escape(title)}</h3>${hint?`<p class="hint">${escape(hint)}</p>`:''}${bodyHTML||''}</div>`;
   }
-  function empty(emoji, text){ return `<div class="empty"><div class="big">${emoji||'🗂️'}</div><div>${text||''}</div></div>`; }
-  return { escape, toast, modal, download, spinner, field, card, empty };
+  function empty(emoji, text, actionHTML){
+    return `<div class="empty"><div class="big">${emoji||'🗂️'}</div><div class="empty-text">${text||''}</div>${actionHTML?`<div class="empty-action">${actionHTML}</div>`:''}</div>`;
+  }
+
+  /* ---------- НОВЫЕ ХЕЛПЕРЫ (только добавление, старые не трогаем) ---------- */
+
+  // badge(text, type) — статусный чип. type: ''|'ok'|'err'|'warn'|'info'|'accent'
+  function badge(text, type){
+    const cls = type ? ' ' + String(type).split(/\s+/).filter(Boolean).join(' ') : '';
+    return `<span class="badge${cls}">${escape(text)}</span>`;
+  }
+
+  // skeleton(lines|opts) — плейсхолдеры загрузки. skeleton(3) или skeleton({lines:3,gap:10})
+  function skeleton(opts){
+    if (typeof opts === 'number') opts = { lines: opts };
+    opts = opts || {};
+    const lines = opts.lines || 3;
+    const out = [];
+    for (let i = 0; i < lines; i++){
+      const w = opts.widths && opts.widths[i] != null ? opts.widths[i] : (i === lines - 1 ? '62%' : '100%');
+      out.push(`<div class="sk-line" style="width:${w}"></div>`);
+    }
+    return `<div class="skeleton" aria-busy="true" aria-label="Загрузка">${out.join('')}</div>`;
+  }
+
+  // table(rows, cols) — декларативная таблица.
+  //   cols: [{key,label,align?,mono?,width?,render?(value,row)->html}]  (или массив строк = ключи=заголовки)
+  //   rows: [{...}]
+  //   opts: {empty:'текст', maxHeight:'320px', dense:false, caption}
+  function table(rows, cols, opts){
+    opts = opts || {};
+    rows = rows || [];
+    cols = (cols || []).map(c => typeof c === 'string' ? { key: c, label: c } : c);
+    if (!rows.length){
+      return empty('🔍', opts.empty || 'Нет данных для отображения.');
+    }
+    const thead = '<thead><tr>' + cols.map(c =>
+      `<th${c.align ? ` style="text-align:${c.align}"` : ''}>${escape(c.label != null ? c.label : c.key)}</th>`
+    ).join('') + '</tr></thead>';
+    const tbody = '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
+      const raw = r[c.key];
+      const html = c.render ? c.render(raw, r) : escape(raw == null ? '' : raw);
+      const style = [c.align ? `text-align:${c.align}` : '', c.width ? `width:${c.width}` : ''].filter(Boolean).join(';');
+      return `<td class="${c.mono ? 'mono' : ''}"${style ? ` style="${style}"` : ''}>${html}</td>`;
+    }).join('') + '</tr>').join('') + '</tbody>';
+    const cap = opts.caption ? `<div class="tbl-cap">${escape(opts.caption)}</div>` : '';
+    const inner = `<table class="tbl${opts.dense ? ' dense' : ''}">${thead}${tbody}</table>`;
+    return cap + (opts.maxHeight ? `<div class="tbl-scroll" style="max-height:${opts.maxHeight}">${inner}</div>` : inner);
+  }
+
+  // tabs(items, opts) — табы с переключением. items:[{id,label,render(panel)|html}]
+  //   opts:{active, onChange(id), variant:'pill'|'underline', store}  store-ключ запоминает выбор.
+  //   Возвращает {el, select(id), active}. Вставлять el в DOM.
+  function tabs(items, opts){
+    opts = opts || {};
+    items = (items || []).filter(Boolean);
+    const variant = opts.variant === 'underline' ? 'underline' : 'pill';
+    const wrap = document.createElement('div');
+    wrap.className = 'tabs-wrap';
+    let active = opts.active || (opts.store && SensorStore.get('tabs_' + opts.store)) || (items[0] && items[0].id);
+    if (!items.some(i => i.id === active)) active = items[0] && items[0].id;
+
+    const bar = document.createElement('div');
+    bar.className = variant === 'underline' ? 'tabs-underline' : 'pill-tabs';
+    bar.setAttribute('role', 'tablist');
+    const panel = document.createElement('div');
+    panel.className = 'tabs-panel';
+
+    function paint(){
+      [...bar.children].forEach(b => {
+        const on = b.dataset.id === active;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+      });
+      const it = items.find(i => i.id === active);
+      panel.innerHTML = '';
+      if (!it) return;
+      if (typeof it.render === 'function'){ const r = it.render(panel); if (typeof r === 'string') panel.innerHTML = r; }
+      else panel.innerHTML = it.html || '';
+    }
+    function select(id){
+      if (!items.some(i => i.id === id)) return;
+      active = id; // backing-переменная; api.active использует тот же active через get/set
+      if (opts.store) SensorStore.set('tabs_' + opts.store, id);
+      paint();
+      if (opts.onChange) opts.onChange(id);
+    }
+    items.forEach((it, idx) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = variant === 'underline' ? 'tab' : 'pill';
+      b.dataset.id = it.id;
+      b.setAttribute('role', 'tab');
+      b.innerHTML = (it.icon ? `<span class="t-ic">${it.icon}</span>` : '') + escape(it.label != null ? it.label : it.id) +
+                    (it.count != null ? ` <span class="t-count">${escape(it.count)}</span>` : '');
+      b.onclick = () => select(it.id);
+      b.onkeydown = e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft'){
+          e.preventDefault();
+          const dir = e.key === 'ArrowRight' ? 1 : -1;
+          const ni = (idx + dir + items.length) % items.length;
+          select(items[ni].id);
+          bar.children[ni].focus();
+        }
+      };
+      bar.appendChild(b);
+    });
+    wrap.appendChild(bar); wrap.appendChild(panel);
+    const api = { el: wrap, bar, panel, select, get active(){ return active; }, set active(v){ select(v); } };
+    paint();
+    return api;
+  }
+
+  // confirm(opts|message) -> Promise<boolean>. opts:{title,message,ok,cancel,danger,detail}
+  function confirm(opts){
+    if (typeof opts === 'string') opts = { message: opts };
+    opts = opts || {};
+    return new Promise(resolve => {
+      const m = modal(opts.title || 'Подтверждение',
+        `<p class="modal-msg">${escape(opts.message || 'Вы уверены?')}</p>` +
+        (opts.detail ? `<p class="hint" style="margin:-6px 0 14px">${escape(opts.detail)}</p>` : '') +
+        `<div class="btn-row" style="justify-content:flex-end;margin-top:6px">
+           <button class="btn" data-act="cancel">${escape(opts.cancel || 'Отмена')}</button>
+           <button class="btn ${opts.danger ? 'danger' : 'primary'}" data-act="ok">${escape(opts.ok || 'Подтвердить')}</button>
+         </div>`);
+      let done = false;
+      const finish = v => { if (done) return; done = true; m.el.removeEventListener('modal:close', onClose); m.close(); resolve(v); };
+      function onClose(){ finish(false); }
+      m.el.addEventListener('modal:close', onClose);
+      m.body.querySelector('[data-act="ok"]').onclick = () => finish(true);
+      m.body.querySelector('[data-act="cancel"]').onclick = () => finish(false);
+      const ok = m.body.querySelector('[data-act="ok"]'); if (ok) ok.focus();
+    });
+  }
+
+  // prompt(opts) -> Promise<string|null>. opts:{title,label,value,placeholder,multiline,ok,cancel,required,hint}
+  function prompt(opts){
+    if (typeof opts === 'string') opts = { title: opts };
+    opts = opts || {};
+    return new Promise(resolve => {
+      const id = 'pm_' + Math.random().toString(36).slice(2, 8);
+      const input = opts.multiline
+        ? `<textarea id="${id}" rows="${opts.rows || 4}" placeholder="${escape(opts.placeholder || '')}">${escape(opts.value || '')}</textarea>`
+        : `<input id="${id}" type="${opts.type || 'text'}" placeholder="${escape(opts.placeholder || '')}" value="${escape(opts.value || '')}" spellcheck="false">`;
+      const m = modal(opts.title || 'Ввод',
+        (opts.label ? `<label class="pm-label" for="${id}">${escape(opts.label)}</label>` : '') +
+        input +
+        (opts.hint ? `<p class="hint" style="margin:8px 0 0">${escape(opts.hint)}</p>` : '') +
+        `<div class="btn-row" style="justify-content:flex-end;margin-top:16px">
+           <button class="btn" data-act="cancel">${escape(opts.cancel || 'Отмена')}</button>
+           <button class="btn primary" data-act="ok">${escape(opts.ok || 'ОК')}</button>
+         </div>`);
+      const field = m.body.querySelector('#' + id);
+      let done = false;
+      const finish = v => { if (done) return; done = true; m.el.removeEventListener('modal:close', onClose); m.close(); resolve(v); };
+      function onClose(){ finish(null); }
+      m.el.addEventListener('modal:close', onClose);
+      const submit = () => {
+        const v = field.value;
+        if (opts.required && !String(v).trim()){ field.classList.add('invalid'); field.focus(); return; }
+        finish(v);
+      };
+      m.body.querySelector('[data-act="ok"]').onclick = submit;
+      m.body.querySelector('[data-act="cancel"]').onclick = () => finish(null);
+      if (!opts.multiline) field.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); submit(); } });
+      field.focus(); field.select && field.select();
+    });
+  }
+
+  // copy(text, okMsg) — копирование в буфер с тостом. Возвращает Promise<boolean>.
+  function copy(text, okMsg){
+    const ok = () => { toast(okMsg || 'Скопировано в буфер ✓', 'ok'); return true; };
+    const fail = () => { toast('Не удалось скопировать', 'err'); return false; };
+    text = String(text == null ? '' : text);
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text).then(ok, () => legacyCopy(text) ? ok() : fail());
+    }
+    return Promise.resolve(legacyCopy(text) ? ok() : fail());
+  }
+  function legacyCopy(text){
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const r = document.execCommand('copy'); ta.remove(); return r;
+    } catch (e){ return false; }
+  }
+
+  // debounce(fn, wait) — отложенный вызов; .cancel() и .flush() доступны.
+  function debounce(fn, wait){
+    wait = wait == null ? 250 : wait;
+    let t, lastArgs, lastThis;
+    function wrapped(){ lastArgs = arguments; lastThis = this; clearTimeout(t); t = setTimeout(() => { t = null; fn.apply(lastThis, lastArgs); }, wait); }
+    wrapped.cancel = () => { clearTimeout(t); t = null; };
+    wrapped.flush = () => { if (t){ clearTimeout(t); t = null; fn.apply(lastThis, lastArgs); } };
+    return wrapped;
+  }
+
+  return { escape, toast, modal, download, spinner, field, card, empty,
+           badge, skeleton, table, tabs, confirm, prompt, copy, debounce };
 })();

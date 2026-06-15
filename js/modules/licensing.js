@@ -1,292 +1,693 @@
 /* Модуль «Лицензирование» — замена легаси-«Спарты» (Documents.exe).
-   Готовит пакеты документов на лицензию МЧС (монтаж/ТО/ремонт средств ОПБ)
-   для ООО и ИП. Реквизиты + валидация ИНН, автозаполнение через DaData,
-   генерация из загруженного .docx-шаблона (docxtemplater) или текстовый
-   предпросмотр с экспортом. Без глюков старой «Спарты». */
+   Полный мастер подготовки пакета документов на лицензию МЧС (монтаж/ТО/ремонт
+   средств ОПБ) и сопутствующих бумаг для ООО и ИП:
+     1) форма организации (ООО/ИП) → 2) тип документа (из window.SEED.sparta) →
+     3) реквизиты с валидацией ИНН/КПП/ОГРН(ИП) по контрольным суммам →
+     4) автозаполнение из контрагента через DaData (с фолбэком на демо) →
+     5) генерация .docx из загруженного шаблона (docxtemplater) или текстовый
+        предпросмотр с экспортом → 6) сохранение/загрузка черновиков.
+   Контракт сохранён: id 'licensing', dept 'Лицензирование', order 20.
+   Без import/export, только SensorApp.register и ctx.ui-хелперы. */
 SensorApp.register({
   id: 'licensing', title: 'Лицензирование', dept: 'Лицензирование', order: 20,
-  icon: '🛡️', description: 'Пакеты документов на лицензию · ООО / ИП · автозаполнение по ИНН',
-  mount(root, ctx){
-    const E = ctx.ui.escape;
+  icon: '🛡️', description: 'Пакеты документов на лицензию · ООО / ИП · автозаполнение по ИНН, валидация реквизитов',
 
-    /* ---- справочник типов документов (из SEED.sparta, иначе фолбэк) ---- */
-    // Реальные типы из легаси-«Спарты» (папка «Мои шаблоны»), обезличенные.
+  /* быстрые действия для командной палитры (⌘K) */
+  actions: [
+    { id:'preview', title:'Предпросмотр документа', hint:'Собрать текст из реквизитов', icon:'👁',
+      run(ctx){ const b=document.getElementById('lic-preview'); if(b) b.click(); } },
+    { id:'gen', title:'Сгенерировать документ', hint:'docx из шаблона или .txt', icon:'⤓',
+      run(ctx){ const b=document.getElementById('lic-gen'); if(b) b.click(); } },
+    { id:'lookup', title:'Заполнить из контрагента (DaData)', hint:'Подтянуть реквизиты по ИНН', icon:'🔎',
+      run(ctx){ const b=document.getElementById('lic-lookup'); if(b) b.click(); } },
+    { id:'draft', title:'Сохранить черновик пакета', hint:'Запомнить реквизиты и тип', icon:'💾',
+      run(ctx){ const b=document.getElementById('lic-save-draft'); if(b) b.click(); } }
+  ],
+
+  mount(root, ctx){
+    const U  = ctx.ui;
+    const E  = U.escape;
+    const DRAFTS_KEY = 'licensing_drafts';
+
+    /* ====================================================================
+       1. СПРАВОЧНИК ТИПОВ ДОКУМЕНТОВ  (источник: window.SEED.sparta)
+       Поддерживаем все исторические формы сида:
+         • {types:[{group:'ООО'|'ИП', templates:[строки|{id,name}]}]}  (текущий сид)
+         • {templates:[...]} / {documents:[...]} / просто массив         (легаси)
+       ==================================================================== */
     const FALLBACK = [
-      { id:'doverennost',  name:'Доверенность на представление интересов в ГУ МЧС',          forms:['ООО','ИП'] },
-      { id:'arenda',       name:'Договор аренды оборудования',                                forms:['ООО','ИП'] },
-      { id:'arenda_break', name:'Соглашение о расторжении договора аренды оборудования',      forms:['ООО','ИП'] },
-      { id:'td',           name:'Трудовой договор (форма)',                                   forms:['ООО','ИП'] },
-      { id:'prikaz_otv',   name:'Приказ о назначении ответственного (ЛВД)',                   forms:['ООО','ИП'] },
-      { id:'prikaz_uvol',  name:'Приказ об увольнении',                                       forms:['ООО','ИП'] },
-      { id:'info_letter',  name:'Информационное письмо о невозможности проведения проверки',  forms:['ООО','ИП'] },
-      { id:'priobschenie', name:'Приобщение документов на проверке',                          forms:['ООО','ИП'] },
-      { id:'cheklist',     name:'Чек-лист для сбора пакета документов',                       forms:['ООО','ИП'] }
+      { id:'info_letter',  name:'Информационное письмо о невозможности проведения проверки удалённо', forms:['ООО','ИП'] },
+      { id:'priobschenie', name:'Приобщение документов на проверке',                                  forms:['ООО','ИП'] },
+      { id:'prikaz_otv',   name:'Приказ о назначении ответственного (ЛВД)',                           forms:['ООО','ИП'] },
+      { id:'prikaz_uvol',  name:'Приказ об увольнении',                                               forms:['ООО','ИП'] },
+      { id:'cheklist_case',name:'Чек-лист для сбора чемодана',                                         forms:['ООО','ИП'] },
+      { id:'arenda',       name:'Договор аренды оборудования',                                         forms:['ООО','ИП'] },
+      { id:'arenda_break', name:'Соглашение о расторжении договора аренды оборудования',               forms:['ООО','ИП'] },
+      { id:'doverennost',  name:'Доверенность на представление интересов в ГУ МЧС',                    forms:['ООО','ИП'] },
+      { id:'td1',          name:'Трудовой договор — Форма 1',                                          forms:['ООО','ИП'] },
+      { id:'td4',          name:'Трудовой договор — Форма 4',                                          forms:['ООО','ИП'] }
     ];
-    const sparta = ((ctx.data && ctx.data.sparta) || {});
-    let docTypes = Array.isArray(sparta) ? sparta
+
+    const sparta = (ctx.data && ctx.data.sparta) || {};
+
+    // привести любое значение к {id,name}
+    const slug = s => 'd_' + String(s).toLowerCase()
+      .replace(/[«»"'(),.]/g,'').replace(/[^a-zа-я0-9]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,40);
+    function asItem(t, i){
+      if (t && typeof t === 'object'){
+        const name = t.name || t.title || ('Документ ' + (i + 1));
+        return { id: t.id || slug(name), name, forms: Array.isArray(t.forms) && t.forms.length ? t.forms : null };
+      }
+      const name = String(t);
+      return { id: slug(name), name, forms: null };
+    }
+
+    let docTypes = [];
+    if (Array.isArray(sparta.types) && sparta.types.length){
+      // сводим одинаковые имена документов из разных групп в один тип с обеими формами
+      const byName = new Map();
+      sparta.types.forEach(grp => {
+        const form = /ип/i.test(grp.group || '') ? 'ИП' : (/ооо|юр/i.test(grp.group || '') ? 'ООО' : (grp.group || ''));
+        (grp.templates || grp.documents || []).forEach((t, i) => {
+          const it = asItem(t, i);
+          // нормализуем «… (для ИП)» / «… (ЛВД, для ИП)» к общему имени,
+          // чтобы схлопнуть дубликаты по форме, сохранив уточнение в скобках.
+          let baseName = it.name
+            // «(ЛВД, для ИП)» → «(ЛВД)», «(ЛВД, для ООО)» → «(ЛВД)»
+            .replace(/,\s*для\s+(ИП|ООО)\s*\)/gi, ')')
+            // «(для ИП)» / «(для ООО)» целиком — убрать
+            .replace(/\s*\(\s*для\s+(ИП|ООО)\s*\)/gi, '')
+            // хвостовое «(ИП)» / «ИП» без скобок
+            .replace(/\s*\(?\s*ИП\s*\)?\s*$/i, '')
+            .replace(/\s*\(\s*\)\s*/g, ' ')
+            .trim();
+          if (!baseName) baseName = it.name.trim();
+          const key = baseName.toLowerCase();
+          if (!byName.has(key)) byName.set(key, { id: slug(baseName), name: baseName, forms: new Set() });
+          if (form) byName.get(key).forms.add(form);
+        });
+      });
+      docTypes = [...byName.values()].map(d => ({ id: d.id, name: d.name, forms: d.forms.size ? [...d.forms] : ['ООО','ИП'] }));
+    } else {
+      const list = Array.isArray(sparta) ? sparta
                  : (Array.isArray(sparta.templates) ? sparta.templates
                  : (Array.isArray(sparta.documents) ? sparta.documents : FALLBACK));
+      docTypes = list.map((t, i) => { const it = asItem(t, i); return { id: it.id, name: it.name, forms: it.forms || ['ООО','ИП'] }; });
+    }
     if (!docTypes.length) docTypes = FALLBACK;
-    // нормализуем форму элемента
-    docTypes = docTypes.map((d,i)=>({
-      id: d.id || ('doc'+i),
-      name: d.name || d.title || ('Документ '+(i+1)),
-      forms: Array.isArray(d.forms) && d.forms.length ? d.forms : ['ООО','ИП']
-    }));
+    const docSource = sparta.source || 'каталог шаблонов СПАРТА (обезличено)';
 
-    /* ---- реквизиты формы ---- */
+    /* ====================================================================
+       2. РЕКВИЗИТЫ
+       ==================================================================== */
     const FIELDS = [
-      { key:'name',     label:'Наименование организации', ph:'ООО «Ромашка» / ИП Иванов И.И.' },
-      { key:'inn',      label:'ИНН',                      ph:'10 цифр (ООО) или 12 (ИП)', mono:true },
-      { key:'ogrn',     label:'ОГРН / ОГРНИП',            ph:'13 или 15 цифр', mono:true },
-      { key:'kpp',      label:'КПП',                      ph:'9 цифр (только ООО)', mono:true, oooOnly:true },
-      { key:'address',  label:'Юридический адрес',        ph:'г. Москва, ул. Примерная, д. 1' },
-      { key:'director', label:'Руководитель / ИП',        ph:'Иванов Иван Иванович' },
-      { key:'work',     label:'Вид работ',                ph:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности' }
+      { key:'name',     label:'Наименование организации', ph:'ООО «Ромашка» / ИП Иванов Иван Иванович', req:true,  hint:'Полное наименование с организационно-правовой формой' },
+      { key:'inn',      label:'ИНН',                       ph:'10 цифр — ООО · 12 цифр — ИП', mono:true, req:true,  maxlen:12, digits:true },
+      { key:'ogrn',     label:'ОГРН / ОГРНИП',             ph:'13 цифр (ОГРН) или 15 (ОГРНИП)', mono:true, maxlen:15, digits:true },
+      { key:'kpp',      label:'КПП',                       ph:'9 знаков', mono:true, maxlen:9, oooOnly:true, hint:'Только для ООО' },
+      { key:'address',  label:'Юридический адрес',         ph:'г. Москва, ул. Примерная, д. 1, оф. 10' },
+      { key:'director', label:'Руководитель / ИП',         ph:'Иванов Иван Иванович', hint:'ФИО и при необходимости должность' },
+      { key:'post',     label:'Должность подписанта',      ph:'Генеральный директор', oooOnly:true },
+      { key:'phone',    label:'Телефон',                   ph:'+7 (___) ___-__-__' },
+      { key:'work',     label:'Вид работ',                 ph:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности', full:true }
     ];
 
-    let state = { form:'ООО', docType: docTypes[0].id, tpl:null, tplName:'', tokens:[] };
+    let state = { form:'ООО', docType: docTypes[0] && docTypes[0].id, tpl:null, tplName:'', tokens:[], docFilter:'' };
 
-    /* ---- разметка ---- */
+    /* ====================================================================
+       3. РАЗМЕТКА
+       ==================================================================== */
     root.innerHTML =
-      ctx.ui.card('Что готовим',
-        'Выберите форму организации и тип документа. Поля «Спарты» переведены в форму с проверкой ИНН.',
-        `<div class="field"><label>Форма организации</label>
-           <div class="pill-tabs" id="form-tabs">
-             <span class="pill ${state.form==='ООО'?'active':''}" data-form="ООО">ООО</span>
-             <span class="pill ${state.form==='ИП'?'active':''}" data-form="ИП">ИП</span>
+      U.card('Что готовим',
+        'Выберите форму организации и тип документа. Перечень типов — из каталога «Спарты»; формы переведены в проверяемые поля.',
+        `<div class="field"><label id="lbl-form">Форма организации</label>
+           <div class="pill-tabs" id="form-tabs" role="tablist" aria-labelledby="lbl-form">
+             <button type="button" class="pill ${state.form==='ООО'?'active':''}" role="tab" aria-selected="${state.form==='ООО'}" data-form="ООО">ООО</button>
+             <button type="button" class="pill ${state.form==='ИП'?'active':''}" role="tab" aria-selected="${state.form==='ИП'}" data-form="ИП">ИП</button>
            </div></div>
-         ${ctx.ui.field('Тип документа',
-           `<select id="doc-type"></select>`)}`) +
-
-      ctx.ui.card('Реквизиты',
-        'Заполните вручную или подтяните по ИНН из картотеки контрагентов.',
-        `<div class="btn-row" style="margin-bottom:12px">
-           <input id="lookup-inn" placeholder="ИНН для поиска" class="mono" style="max-width:200px">
-           <button class="btn" id="lookup">🔎 Заполнить из контрагента</button>
-           <span id="lookup-note" class="badge" style="display:none"></span>
-         </div>
-         <div id="req-fields"></div>
-         <div id="inn-status" style="margin-top:2px"></div>`) +
-
-      ctx.ui.card('Шаблон (необязательно)',
-        'Загрузите .docx-шаблон с полями {ОРГАНИЗАЦИЯ}, {ИНН}… — заполним его. Без шаблона соберём текстовый документ.',
-        `<div class="btn-row">
-           <label class="btn primary">📎 Загрузить .docx<input id="tpl" type="file" accept=".docx" hidden></label>
-           <span id="tplname" class="badge">шаблон не выбран</span>
+         <div class="field">
+           <label for="doc-filter">Тип документа <span class="tok" id="doc-count"></span></label>
+           <input id="doc-filter" type="search" placeholder="Поиск по типу документа…" autocomplete="off" spellcheck="false" style="margin-bottom:8px">
+           <select id="doc-type" size="1" aria-label="Тип документа"></select>
+           <p class="hint" id="doc-meta" style="margin:8px 0 0"></p>
          </div>`) +
 
-      ctx.ui.card('Генерация',
-        '',
-        `<div class="btn-row">
-           <button class="btn primary" id="gen">⤓ Сгенерировать</button>
-           <button class="btn" id="preview">👁 Предпросмотр</button>
-           <button class="btn ghost" id="clear">Очистить</button>
+      U.card('Реквизиты',
+        'Заполните вручную или подтяните по ИНН из картотеки контрагентов (DaData). Контрольные суммы ИНН/ОГРН/КПП проверяются на лету.',
+        `<div class="btn-row" style="margin-bottom:14px">
+           <input id="lookup-inn" placeholder="ИНН для пробива" class="mono" inputmode="numeric" autocomplete="off" style="max-width:220px">
+           <button class="btn" id="lic-lookup" type="button">🔎 Заполнить из контрагента</button>
+           <span id="lookup-note" class="badge" style="display:none"></span>
          </div>
-         <div id="preview-wrap" style="margin-top:14px"></div>`);
+         <div id="req-fields" class="grid cols-2"></div>
+         <div id="req-errors" style="margin-top:6px"></div>
+         <div class="divider"></div>
+         <div id="completeness"></div>`) +
 
-    /* ---- селект типов документов ---- */
-    const sel = root.querySelector('#doc-type');
+      U.card('Шаблон документа (необязательно)',
+        'Загрузите .docx с полями вида {ОРГАНИЗАЦИЯ}, {ИНН}, {АДРЕС} — заполним их данными формы. Без шаблона соберём аккуратный текстовый документ.',
+        `<div class="btn-row">
+           <label class="btn primary">📎 Загрузить .docx<input id="tpl" type="file" accept=".docx" hidden></label>
+           <button class="btn ghost" id="tpl-clear" type="button" style="display:none">Убрать шаблон</button>
+           <span id="tplname" class="badge">шаблон не выбран</span>
+         </div>
+         <div id="tpl-tokens" style="margin-top:12px"></div>`) +
+
+      U.card('Генерация и предпросмотр', '',
+        `<div class="btn-row">
+           <button class="btn primary" id="lic-gen" type="button">⤓ Сгенерировать</button>
+           <button class="btn" id="lic-preview" type="button">👁 Предпросмотр</button>
+           <button class="btn" id="lic-copy" type="button">⧉ Копировать текст</button>
+           <button class="btn ghost" id="lic-clear" type="button">Очистить форму</button>
+         </div>
+         <div id="preview-wrap" style="margin-top:14px"></div>`) +
+
+      U.card('Черновики пакетов',
+        'Сохраняйте набор реквизитов и тип документа, чтобы вернуться к нему позже. Хранится локально на этом устройстве.',
+        `<div class="btn-row" style="margin-bottom:6px">
+           <button class="btn" id="lic-save-draft" type="button">💾 Сохранить текущий как черновик</button>
+         </div>
+         <div id="drafts-wrap" style="margin-top:8px"></div>`) +
+
+      U.card('Справочник типов документов «Спарты» ('+docTypes.length+')',
+        'Источник: '+docSource+'. Доступность по форме организации указана бейджем.',
+        `<div id="catalog-wrap"></div>`);
+
+    /* короткие ссылки на узлы */
+    const sel        = root.querySelector('#doc-type');
+    const docFilter  = root.querySelector('#doc-filter');
+    const docMeta    = root.querySelector('#doc-meta');
+    const docCount   = root.querySelector('#doc-count');
+    const reqWrap    = root.querySelector('#req-fields');
+    const reqErrors  = root.querySelector('#req-errors');
+    const completeEl = root.querySelector('#completeness');
+    const previewWrap= root.querySelector('#preview-wrap');
+    const draftsWrap = root.querySelector('#drafts-wrap');
+
+    /* ====================================================================
+       4. ТИПЫ ДОКУМЕНТОВ: фильтр + селект + мета
+       ==================================================================== */
+    function typesForForm(){ return docTypes.filter(d => d.forms.indexOf(state.form) >= 0); }
+    function visibleTypes(){
+      const q = state.docFilter.trim().toLowerCase();
+      const base = typesForForm();
+      return q ? base.filter(d => d.name.toLowerCase().indexOf(q) >= 0) : base;
+    }
     function fillTypes(){
-      const list = docTypes.filter(d=>d.forms.indexOf(state.form)>=0);
-      sel.innerHTML = list.map(d=>`<option value="${E(d.id)}">${E(d.name)}</option>`).join('');
-      if (!list.find(d=>d.id===state.docType)) state.docType = (list[0]&&list[0].id) || '';
-      sel.value = state.docType;
+      const list = visibleTypes();
+      const all = typesForForm();
+      sel.innerHTML = list.length
+        ? list.map(d => `<option value="${E(d.id)}">${E(d.name)}</option>`).join('')
+        : `<option value="" disabled selected>Ничего не найдено</option>`;
+      if (list.length){
+        if (!list.find(d => d.id === state.docType)) state.docType = list[0].id;
+        sel.value = state.docType;
+      } else { state.docType = ''; }
+      docCount.textContent = state.docFilter
+        ? `${list.length} из ${all.length}`
+        : `${all.length} для ${state.form}`;
+      updateDocMeta();
     }
-    sel.addEventListener('change', ()=>{ state.docType = sel.value; });
+    function updateDocMeta(){
+      const dt = docTypes.find(d => d.id === state.docType);
+      if (!dt){ docMeta.textContent = 'Выберите тип документа.'; return; }
+      docMeta.innerHTML = `Выбран: <strong>${E(dt.name)}</strong> · доступен для ${dt.forms.map(f=>E(f)).join(' и ')}.`;
+    }
+    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); });
+    docFilter.addEventListener('input', U.debounce(() => { state.docFilter = docFilter.value; fillTypes(); }, 140));
 
-    /* ---- табы формы ---- */
-    root.querySelector('#form-tabs').addEventListener('click', e=>{
-      const p = e.target.closest('.pill'); if(!p) return;
-      state.form = p.dataset.form;
-      root.querySelectorAll('#form-tabs .pill').forEach(x=>x.classList.toggle('active', x.dataset.form===state.form));
-      fillTypes();
-      renderFields();
+    /* ====================================================================
+       5. ТАБЫ ФОРМЫ ОРГАНИЗАЦИИ
+       ==================================================================== */
+    root.querySelector('#form-tabs').addEventListener('click', e => {
+      const p = e.target.closest('.pill'); if (!p) return;
+      setForm(p.dataset.form);
     });
-
-    /* ---- поля реквизитов ---- */
-    function renderFields(){
-      const w = root.querySelector('#req-fields');
-      const vals = collect(false);
-      w.innerHTML = FIELDS.filter(f=>!(f.oooOnly && state.form==='ИП')).map(f=>
-        ctx.ui.field(f.label,
-          `<input data-key="${E(f.key)}" placeholder="${E(f.ph)}" class="${f.mono?'mono':''}" value="${E(vals[f.key]||'')}">`)
-      ).join('');
-      w.querySelector('[data-key="inn"]').addEventListener('input', validateInn);
-      validateInn();
+    function setForm(form){
+      if (state.form === form) return;
+      const vals = collect();              // сохраняем введённое при переключении
+      state.form = form;
+      root.querySelectorAll('#form-tabs .pill').forEach(x => {
+        const on = x.dataset.form === form; x.classList.toggle('active', on); x.setAttribute('aria-selected', on);
+      });
+      fillTypes();
+      renderFields(vals);
+      renderCatalog();
     }
 
-    function collect(/*forValidation*/){
+    /* ====================================================================
+       6. ПОЛЯ РЕКВИЗИТОВ
+       ==================================================================== */
+    function fieldsForForm(){ return FIELDS.filter(f => !(f.oooOnly && state.form === 'ИП')); }
+    function renderFields(preset){
+      const vals = preset || collect();
+      reqWrap.innerHTML = fieldsForForm().map(f => {
+        const attrs = [
+          `data-key="${E(f.key)}"`,
+          `id="f-${E(f.key)}"`,
+          `placeholder="${E(f.ph)}"`,
+          f.mono ? 'class="mono"' : '',
+          f.maxlen ? `maxlength="${f.maxlen}"` : '',
+          f.digits ? 'inputmode="numeric"' : '',
+          'autocomplete="off"',
+          `value="${E(vals[f.key] || '')}"`
+        ].filter(Boolean).join(' ');
+        const tok = f.req ? 'обязательно' : (f.hint || '');
+        const cell = U.field(f.label, `<input ${attrs}>`, tok);
+        return f.full ? `<div style="grid-column:1/-1">${cell}</div>` : cell;
+      }).join('');
+      // живая валидация цифровых полей
+      ['inn','ogrn','kpp'].forEach(k => {
+        const inp = reqWrap.querySelector(`[data-key="${k}"]`);
+        if (inp) inp.addEventListener('input', () => {
+          if (k !== 'kpp') inp.value = inp.value.replace(/\D/g, '');
+          runValidation(); updateCompleteness();
+        });
+      });
+      fieldsForForm().forEach(f => {
+        const inp = reqWrap.querySelector(`[data-key="${f.key}"]`);
+        if (inp) inp.addEventListener('input', U.debounce(updateCompleteness, 120));
+      });
+      runValidation(); updateCompleteness();
+    }
+    function collect(){
       const o = {};
-      root.querySelectorAll('#req-fields [data-key]').forEach(i=>o[i.dataset.key]=i.value.trim());
+      reqWrap.querySelectorAll('[data-key]').forEach(i => o[i.dataset.key] = i.value.trim());
       return o;
     }
+    function setVals(map){
+      reqWrap.querySelectorAll('[data-key]').forEach(i => { if (map[i.dataset.key] != null) i.value = map[i.dataset.key]; });
+    }
 
-    /* ---- валидация ИНН (10 для ЮЛ, 12 для ФЛ/ИП) с контрольной суммой ---- */
+    /* ====================================================================
+       7. ВАЛИДАЦИЯ ИНН / ОГРН / КПП (контрольные суммы)
+       ==================================================================== */
     function innChecksum(inn){
       const d = inn.split('').map(Number);
-      const k = (w)=> w.reduce((s,wi,i)=>s+wi*d[i],0)%11%10;
-      if (inn.length===10){
-        return d[9] === k([2,4,10,3,5,9,4,6,8]);
-      }
-      if (inn.length===12){
+      const k = w => w.reduce((s, wi, i) => s + wi * d[i], 0) % 11 % 10;
+      if (inn.length === 10) return d[9] === k([2,4,10,3,5,9,4,6,8]);
+      if (inn.length === 12){
         const n11 = k([7,2,4,10,3,5,9,4,6,8]);
         const n12 = k([3,7,2,4,10,3,5,9,4,6,8]);
-        return d[10]===n11 && d[11]===n12;
+        return d[10] === n11 && d[11] === n12;
       }
       return false;
     }
-    function validateInn(){
-      const inp = root.querySelector('#req-fields [data-key="inn"]');
-      const box = root.querySelector('#inn-status');
-      if(!inp){ box.innerHTML=''; return true; }
-      const inn = inp.value.trim();
-      if(!inn){ box.innerHTML=''; return false; }
-      const expectLen = state.form==='ООО' ? 10 : 12;
-      if(!/^\d+$/.test(inn)){ box.innerHTML = `<span class="badge err">ИНН: только цифры</span>`; return false; }
-      if(inn.length!==expectLen){
-        box.innerHTML = `<span class="badge err">ИНН ${state.form}: нужно ${expectLen} цифр (введено ${inn.length})</span>`;
-        return false;
+    // ОГРН (13) и ОГРНИП (15): последняя цифра = (число без неё) mod (len-2) mod 10
+    function ogrnChecksum(ogrn){
+      if (!/^\d+$/.test(ogrn)) return false;
+      if (ogrn.length === 13){
+        const ctrl = Number(BigIntSafe(ogrn.slice(0, 12)) % 11n % 10n);
+        return ctrl === Number(ogrn[12]);
       }
-      if(!innChecksum(inn)){ box.innerHTML = `<span class="badge err">ИНН: не сходится контрольная сумма</span>`; return false; }
-      box.innerHTML = `<span class="badge ok">ИНН корректен ✓</span>`;
-      return true;
+      if (ogrn.length === 15){
+        const ctrl = Number(BigIntSafe(ogrn.slice(0, 14)) % 13n % 10n);
+        return ctrl === Number(ogrn[14]);
+      }
+      return false;
+    }
+    function BigIntSafe(s){ try { return BigInt(s); } catch(e){ return 0n; } }
+
+    // вернуть {state:'ok'|'err'|'idle', msg} по конкретному полю
+    function checkInn(v){
+      if (!v) return { state:'idle' };
+      if (!/^\d+$/.test(v)) return { state:'err', msg:'ИНН: только цифры' };
+      const need = state.form === 'ООО' ? 10 : 12;
+      if (v.length !== need) return { state:'err', msg:`ИНН ${state.form}: нужно ${need} цифр (введено ${v.length})` };
+      if (!innChecksum(v)) return { state:'err', msg:'ИНН: не сходится контрольная сумма' };
+      return { state:'ok', msg:'ИНН корректен' };
+    }
+    function checkOgrn(v){
+      if (!v) return { state:'idle' };
+      if (!/^\d+$/.test(v)) return { state:'err', msg:'ОГРН: только цифры' };
+      const need = state.form === 'ООО' ? 13 : 15;
+      if (v.length !== need) return { state:'err', msg:`${state.form==='ООО'?'ОГРН':'ОГРНИП'}: нужно ${need} цифр (введено ${v.length})` };
+      if (!ogrnChecksum(v)) return { state:'err', msg:`${state.form==='ООО'?'ОГРН':'ОГРНИП'}: контрольный разряд не совпал` };
+      return { state:'ok', msg:`${state.form==='ООО'?'ОГРН':'ОГРНИП'} корректен` };
+    }
+    function checkKpp(v){
+      if (!v || state.form === 'ИП') return { state:'idle' };
+      if (!/^\d{4}[\dA-Z]{2}\d{3}$/i.test(v)) return { state:'err', msg:'КПП: формат NNNNPPNNN (9 знаков)' };
+      return { state:'ok', msg:'КПП корректен' };
     }
 
-    /* ---- автозаполнение из DaData (мок без ключей) ---- */
-    root.querySelector('#lookup').addEventListener('click', async ()=>{
-      const btn = root.querySelector('#lookup');
+    function runValidation(){
+      const v = collect();
+      const checks = { inn: checkInn(v.inn || ''), ogrn: checkOgrn(v.ogrn || ''), kpp: checkKpp(v.kpp || '') };
+      // покрасить поля
+      Object.keys(checks).forEach(k => {
+        const inp = reqWrap.querySelector(`[data-key="${k}"]`);
+        if (!inp) return;
+        if (checks[k].state === 'err') inp.setAttribute('aria-invalid', 'true');
+        else inp.removeAttribute('aria-invalid');
+      });
+      // собрать строку статусов
+      const chips = [];
+      [['inn','ИНН'],['ogrn','ОГРН'],['kpp','КПП']].forEach(([k]) => {
+        const c = checks[k];
+        if (c.state === 'ok')  chips.push(`<span class="badge ok">${E(c.msg)} ✓</span>`);
+        if (c.state === 'err') chips.push(`<span class="badge err">${E(c.msg)}</span>`);
+      });
+      reqErrors.innerHTML = chips.length ? `<div class="btn-row">${chips.join('')}</div>` : '';
+      return checks;
+    }
+    function validForGen(){
+      const c = runValidation();
+      // ИНН обязателен и должен быть корректен; ОГРН/КПП — если заполнены, не должны быть с ошибкой
+      const v = collect();
+      if (!v.inn) return { ok:false, msg:'Укажите ИНН организации' };
+      if (c.inn.state !== 'ok') return { ok:false, msg:c.inn.msg || 'Проверьте ИНН' };
+      if (c.ogrn.state === 'err') return { ok:false, msg:c.ogrn.msg };
+      if (c.kpp.state === 'err') return { ok:false, msg:c.kpp.msg };
+      return { ok:true };
+    }
+
+    /* ====================================================================
+       8. ИНДИКАТОР ЗАПОЛНЕННОСТИ
+       ==================================================================== */
+    function updateCompleteness(){
+      const v = collect();
+      const fields = fieldsForForm();
+      const filled = fields.filter(f => (v[f.key] || '').length).length;
+      const pct = Math.round(filled / fields.length * 100);
+      const reqMissing = fields.filter(f => f.req && !(v[f.key] || '').length).map(f => f.label.toLowerCase());
+      completeEl.innerHTML =
+        `<div style="display:flex;align-items:center;gap:10px">
+           <div class="bar" style="flex:1"><span style="width:${pct}%"></span></div>
+           <span class="mono muted" style="white-space:nowrap">${filled}/${fields.length} · ${pct}%</span>
+         </div>
+         <p class="foot" style="margin:8px 0 0">${
+           reqMissing.length
+             ? 'Не заполнено обязательное: ' + reqMissing.map(E).join(', ') + '.'
+             : 'Обязательные поля заполнены. Можно генерировать документ.'
+         }</p>`;
+    }
+
+    /* ====================================================================
+       9. АВТОЗАПОЛНЕНИЕ ИЗ DaData
+       ==================================================================== */
+    root.querySelector('#lic-lookup').addEventListener('click', async () => {
+      const btn  = root.querySelector('#lic-lookup');
       const note = root.querySelector('#lookup-note');
-      const q = (root.querySelector('#lookup-inn').value.trim()) ||
-                (root.querySelector('#req-fields [data-key="inn"]')||{}).value || '';
-      if(!q){ return ctx.toast('Укажите ИНН для поиска','err'); }
-      btn.disabled = true; btn.innerHTML = ctx.ui.spinner + ' Поиск…';
-      try{
+      const raw  = (root.querySelector('#lookup-inn').value.trim()) || (collect().inn || '');
+      const q    = raw.replace(/\s/g, '');
+      if (!q) return ctx.toast('Укажите ИНН для пробива', 'err');
+      const byId = /^\d{10}(\d{2})?$/.test(q);
+      btn.disabled = true; const label = btn.innerHTML; btn.innerHTML = U.spinner + ' Поиск…';
+      try {
         const dadata = ctx.integrations.dadata;
-        const res = dadata ? await dadata.run('findById', String(q).trim())
+        const res = dadata ? await dadata.run(byId ? 'findById' : 'suggest', { query: q })
                            : { ok:false, data:null, note:'DaData не подключена' };
         const d = res && res.data;
-        if(!d){ ctx.toast('Контрагент не найден','err'); }
+        if (!d || !(d.name || d.inn)){ ctx.toast('Контрагент не найден', 'err'); note.style.display='none'; }
         else {
           apply(d);
-          if(res.mock || !res.ok){
-            note.style.display=''; note.className='badge warn';
-            note.textContent = res.note || 'демо-данные';
-          } else { note.style.display=''; note.className='badge ok'; note.textContent='данные DaData ✓'; }
-          ctx.toast('Реквизиты заполнены','ok');
+          note.style.display = '';
+          if (res.mock || !res.ok){
+            note.className = 'badge warn';
+            note.textContent = res.reason === 'web-blocked' ? 'демо · только desktop' : (res.note ? 'демо-данные' : 'демо-данные');
+            note.title = res.note || '';
+          } else {
+            note.className = 'badge ok'; note.textContent = 'данные DaData ✓'; note.title = '';
+          }
+          ctx.toast('Реквизиты заполнены', 'ok');
         }
-      }catch(err){ ctx.toast('Ошибка пробива: '+(err.message||err),'err'); }
-      finally{ btn.disabled=false; btn.innerHTML='🔎 Заполнить из контрагента'; }
+      } catch (err){ ctx.toast('Ошибка пробива: ' + (err && err.message || err), 'err'); }
+      finally { btn.disabled = false; btn.innerHTML = label; }
+    });
+    root.querySelector('#lookup-inn').addEventListener('keydown', e => {
+      if (e.key === 'Enter'){ e.preventDefault(); root.querySelector('#lic-lookup').click(); }
     });
 
     function apply(d){
-      // d — нормализованный объект DaData {name,inn,ogrn,kpp,address,manager,status}
-      const map = { name:d.name, inn:d.inn, ogrn:d.ogrn, kpp:d.kpp, address:d.address, director:d.manager };
+      // d — плоский объект DaData: {name,inn,ogrn,kpp,address,manager,status}
+      const inn = String(d.inn || '');
       // авто-переключение формы по длине ИНН
-      if(d.inn && d.inn.length===12 && state.form!=='ИП'){ state.form='ИП'; root.querySelectorAll('#form-tabs .pill').forEach(x=>x.classList.toggle('active', x.dataset.form==='ИП')); fillTypes(); renderFields(); }
-      else if(d.inn && d.inn.length===10 && state.form!=='ООО'){ state.form='ООО'; root.querySelectorAll('#form-tabs .pill').forEach(x=>x.classList.toggle('active', x.dataset.form==='ООО')); fillTypes(); renderFields(); }
-      root.querySelectorAll('#req-fields [data-key]').forEach(i=>{ if(map[i.dataset.key]) i.value = map[i.dataset.key]; });
-      validateInn();
+      if (inn.length === 12 && state.form !== 'ИП') setForm('ИП');
+      else if (inn.length === 10 && state.form !== 'ООО') setForm('ООО');
+      const map = { name:d.name, inn:d.inn, ogrn:d.ogrn, kpp:d.kpp, address:d.address, director:d.manager };
+      Object.keys(map).forEach(k => { if (map[k] == null) delete map[k]; });
+      setVals(map);
+      runValidation(); updateCompleteness();
     }
 
-    /* ---- загрузка шаблона .docx ---- */
-    root.querySelector('#tpl').addEventListener('change', e=>{
-      const file = e.target.files[0]; if(!file) return;
+    /* ====================================================================
+       10. ШАБЛОН .docx
+       ==================================================================== */
+    function detect(zip){
+      const set = new Set();
+      const parts = zip.file(/word\/(document|header\d+|footer\d+)\.xml/);
+      parts.forEach(p => { const text = p.asText().replace(/<[^>]+>/g, '');
+        (text.match(/\{[^{}<>]+\}/g) || []).forEach(t => set.add(t.slice(1, -1).trim())); });
+      return [...set];
+    }
+    root.querySelector('#tpl').addEventListener('change', e => {
+      const file = e.target.files[0]; if (!file) return;
       const rd = new FileReader();
-      rd.onload = ()=>{
-        try{
+      rd.onload = () => {
+        try {
           state.tpl = rd.result; state.tplName = file.name;
           const zip = new PizZip(state.tpl);
           state.tokens = detect(zip);
           root.querySelector('#tplname').textContent = file.name + ' · ' + state.tokens.length + ' полей';
-        }catch(err){ state.tpl=null; ctx.toast('Не удалось прочитать шаблон: '+err.message,'err'); }
+          root.querySelector('#tplname').className = 'badge ok';
+          root.querySelector('#tpl-clear').style.display = '';
+          renderTokenReport();
+        } catch (err){ resetTpl(); ctx.toast('Не удалось прочитать шаблон: ' + err.message, 'err'); }
       };
       rd.readAsArrayBuffer(file);
     });
-    function detect(zip){
-      const set = new Set();
-      const parts = zip.file(/word\/(document|header\d+|footer\d+)\.xml/);
-      parts.forEach(p=>{ const text = p.asText().replace(/<[^>]+>/g,'');
-        (text.match(/\{[^{}<>]+\}/g)||[]).forEach(t=>set.add(t.slice(1,-1).trim())); });
-      return [...set];
+    root.querySelector('#tpl-clear').addEventListener('click', () => { resetTpl(); ctx.toast('Шаблон убран', 'info'); });
+    function resetTpl(){
+      state.tpl = null; state.tplName = ''; state.tokens = [];
+      const b = root.querySelector('#tplname'); b.textContent = 'шаблон не выбран'; b.className = 'badge';
+      root.querySelector('#tpl-clear').style.display = 'none';
+      root.querySelector('#tpl-tokens').innerHTML = '';
+      const inp = root.querySelector('#tpl'); if (inp) inp.value = '';
     }
+    // какие токены шаблона мы умеем заполнять данными формы
+    function renderTokenReport(){
+      const wrap = root.querySelector('#tpl-tokens');
+      if (!state.tokens.length){ wrap.innerHTML = `<p class="hint">В шаблоне не найдено полей вида <span class="mono">{ПОЛЕ}</span>.</p>`; return; }
+      const data = docData();
+      const known = state.tokens.filter(t => norm(t) in dataIndex(data));
+      const unknown = state.tokens.filter(t => !(norm(t) in dataIndex(data)));
+      wrap.innerHTML =
+        `<p class="hint" style="margin-bottom:8px">Найдено полей: ${state.tokens.length}. Заполним: <strong>${known.length}</strong>${unknown.length?`, оставим пустыми: ${unknown.length}`:''}.</p>` +
+        `<div class="btn-row">` +
+          state.tokens.map(t => {
+            const ok = norm(t) in dataIndex(data);
+            return `<span class="badge ${ok?'ok':''}" title="${ok?'будет заполнено':'нет данных в форме'}">{${E(t)}}</span>`;
+          }).join('') +
+        `</div>`;
+    }
+    function norm(t){ return String(t).toUpperCase().replace(/\s+/g, '_').replace(/[ЁË]/g, 'Е'); }
+    function dataIndex(data){ const ix = {}; Object.keys(data).forEach(k => ix[norm(k)] = data[k]); return ix; }
 
-    /* ---- сборка данных для документа ---- */
+    /* ====================================================================
+       11. ДАННЫЕ ДЛЯ ДОКУМЕНТА  (синонимы полей шаблона)
+       ==================================================================== */
     function docData(){
       const v = collect();
-      const dt = docTypes.find(d=>d.id===state.docType);
+      const dt = docTypes.find(d => d.id === state.docType);
+      const today = new Date().toLocaleDateString('ru-RU');
       return {
-        ОРГАНИЗАЦИЯ: v.name||'', НАИМЕНОВАНИЕ: v.name||'', ФОРМА: state.form,
-        ИНН: v.inn||'', ОГРН: v.ogrn||'', ОГРНИП: v.ogrn||'', КПП: v.kpp||'',
-        АДРЕС: v.address||'', ЮРАДРЕС: v.address||'', ДИРЕКТОР: v.director||'', РУКОВОДИТЕЛЬ: v.director||'',
-        ВИД_РАБОТ: v.work||'', ВИДРАБОТ: v.work||'',
-        ТИП_ДОКУМЕНТА: dt?dt.name:'', ДАТА: new Date().toLocaleDateString('ru-RU')
+        ОРГАНИЗАЦИЯ: v.name || '', НАИМЕНОВАНИЕ: v.name || '', КОМПАНИЯ: v.name || '',
+        ФОРМА: state.form,
+        ИНН: v.inn || '',
+        ОГРН: state.form === 'ООО' ? (v.ogrn || '') : '', ОГРНИП: state.form === 'ИП' ? (v.ogrn || '') : '',
+        КПП: v.kpp || '',
+        АДРЕС: v.address || '', ЮРАДРЕС: v.address || '', ЮРИДИЧЕСКИЙ_АДРЕС: v.address || '',
+        ДИРЕКТОР: v.director || '', РУКОВОДИТЕЛЬ: v.director || '', ИП: state.form === 'ИП' ? (v.director || '') : '',
+        ДОЛЖНОСТЬ: state.form === 'ООО' ? (v.post || 'Генеральный директор') : 'Индивидуальный предприниматель',
+        ТЕЛЕФОН: v.phone || '',
+        ВИД_РАБОТ: v.work || '', ВИДРАБОТ: v.work || '', РАБОТЫ: v.work || '',
+        ТИП_ДОКУМЕНТА: dt ? dt.name : '', ДОКУМЕНТ: dt ? dt.name : '',
+        ДАТА: today, ГОРОД: 'Москва'
       };
     }
 
-    /* ---- текстовый документ (фолбэк без шаблона) ---- */
+    /* ====================================================================
+       12. ТЕКСТОВЫЙ ДОКУМЕНТ (фолбэк без шаблона)
+       ==================================================================== */
     function buildText(){
       const v = collect();
-      const dt = docTypes.find(d=>d.id===state.docType);
+      const dt = docTypes.find(d => d.id === state.docType);
+      const isIP = state.form === 'ИП';
       const L = [];
-      L.push((dt?dt.name:'Документ').toUpperCase());
+      L.push((dt ? dt.name : 'Документ').toUpperCase());
       L.push('');
-      L.push('Форма организации: '+state.form);
-      L.push('Наименование: '+(v.name||'—'));
-      L.push('ИНН: '+(v.inn||'—'));
-      L.push('ОГРН'+(state.form==='ИП'?'ИП':'')+': '+(v.ogrn||'—'));
-      if(state.form==='ООО') L.push('КПП: '+(v.kpp||'—'));
-      L.push('Юридический адрес: '+(v.address||'—'));
-      L.push((state.form==='ИП'?'ИП: ':'Руководитель: ')+(v.director||'—'));
-      L.push('Вид работ: '+(v.work||'—'));
+      L.push('Реквизиты ' + (isIP ? 'индивидуального предпринимателя' : 'организации') + ':');
+      L.push('  Форма: ' + state.form);
+      L.push('  Наименование: ' + (v.name || '—'));
+      L.push('  ИНН: ' + (v.inn || '—'));
+      L.push('  ' + (isIP ? 'ОГРНИП' : 'ОГРН') + ': ' + (v.ogrn || '—'));
+      if (!isIP) L.push('  КПП: ' + (v.kpp || '—'));
+      L.push('  Юридический адрес: ' + (v.address || '—'));
+      L.push('  ' + (isIP ? 'ИП' : 'Руководитель') + ': ' + (v.director || '—'));
+      if (!isIP && v.post) L.push('  Должность: ' + v.post);
+      if (v.phone) L.push('  Телефон: ' + v.phone);
+      L.push('  Вид работ: ' + (v.work || '—'));
       L.push('');
-      L.push('Дата: '+new Date().toLocaleDateString('ru-RU'));
-      L.push('Подпись: ____________________ /'+(v.director||'')+'/');
+      L.push('Дата: ' + new Date().toLocaleDateString('ru-RU') + ', г. Москва');
+      L.push('');
+      const signer = isIP ? (v.director || '') : (v.director || '');
+      L.push((isIP ? 'ИП' : (v.post || 'Руководитель')) + ': ____________________ / ' + signer + ' /');
+      L.push('М.П.');
       return L.join('\n');
     }
+    function previewHTML(text){
+      return `<pre class="mono" style="white-space:pre-wrap;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-s);padding:14px;max-height:360px;overflow:auto;font-size:12.5px;line-height:1.6">${E(text)}</pre>`;
+    }
 
-    root.querySelector('#preview').addEventListener('click', ()=>{
-      root.querySelector('#preview-wrap').innerHTML =
-        `<pre class="mono" style="white-space:pre-wrap;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:14px;max-height:340px;overflow:auto">${E(buildText())}</pre>`;
+    /* ====================================================================
+       13. КНОПКИ: предпросмотр / копировать / очистить / генерация
+       ==================================================================== */
+    root.querySelector('#lic-preview').addEventListener('click', () => {
+      previewWrap.innerHTML = previewHTML(buildText());
+    });
+    root.querySelector('#lic-copy').addEventListener('click', () => { U.copy(buildText(), 'Текст документа скопирован ✓'); });
+    root.querySelector('#lic-clear').addEventListener('click', async () => {
+      const yes = await U.confirm({ title:'Очистить форму', message:'Сбросить все реквизиты и предпросмотр?', ok:'Очистить', cancel:'Отмена', danger:true });
+      if (!yes) return;
+      setVals(Object.fromEntries(FIELDS.map(f => [f.key, ''])));
+      root.querySelector('#lookup-inn').value = '';
+      root.querySelector('#lookup-note').style.display = 'none';
+      previewWrap.innerHTML = '';
+      runValidation(); updateCompleteness();
+      ctx.toast('Форма очищена', 'info');
     });
 
-    root.querySelector('#clear').addEventListener('click', ()=>{
-      root.querySelectorAll('#req-fields [data-key]').forEach(i=>i.value='');
-      root.querySelector('#lookup-inn').value='';
-      root.querySelector('#lookup-note').style.display='none';
-      root.querySelector('#preview-wrap').innerHTML='';
-      validateInn();
-    });
-
-    /* ---- генерация ---- */
-    root.querySelector('#gen').addEventListener('click', ()=>{
+    root.querySelector('#lic-gen').addEventListener('click', () => {
+      const valid = validForGen();
+      if (!valid.ok) return ctx.toast(valid.msg, 'err');
       const v = collect();
-      if(!v.name){ return ctx.toast('Укажите наименование организации','err'); }
-      if(!validateInn()){ return ctx.toast('Проверьте ИНН перед генерацией','err'); }
-      const dt = docTypes.find(d=>d.id===state.docType);
-      const base = ((dt?dt.name:'документ')+' — '+(v.name||state.form)).replace(/[\\/:*?"<>|]+/g,' ').trim();
+      const dt = docTypes.find(d => d.id === state.docType);
+      const base = ((dt ? dt.name : 'документ') + ' — ' + (v.name || state.form))
+        .replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-      if(state.tpl){
-        try{
+      if (state.tpl){
+        try {
           const zip = new PizZip(state.tpl);
-          const doc = new window.docxtemplater(zip,{paragraphLoop:true,linebreaks:true,delimiters:{start:'{',end:'}'},nullGetter:()=>''});
-          doc.render(docData());
-          const blob = doc.getZip().generate({type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
-          ctx.ui.download(base+'.docx', blob);
-          ctx.toast('Документ из шаблона сгенерирован ✓','ok');
-        }catch(err){ ctx.toast('Ошибка генерации шаблона: '+(err.message||err),'err'); }
+          const doc = new window.docxtemplater(zip, {
+            paragraphLoop: true, linebreaks: true,
+            delimiters: { start:'{', end:'}' }, nullGetter: () => ''
+          });
+          doc.render(dataIndex(docData()));   // ключи нормализованы под токены шаблона
+          const blob = doc.getZip().generate({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          U.download(base + '.docx', blob);
+          ctx.toast('Документ из шаблона сгенерирован ✓', 'ok');
+        } catch (err){ ctx.toast('Ошибка генерации шаблона: ' + (err && err.message || err), 'err'); }
       } else {
         const text = buildText();
-        root.querySelector('#preview-wrap').innerHTML =
-          `<pre class="mono" style="white-space:pre-wrap;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:14px;max-height:340px;overflow:auto">${E(text)}</pre>`;
-        const blob = new Blob(['﻿'+text], {type:'text/plain;charset=utf-8'});
-        ctx.ui.download(base+'.txt', blob);
-        ctx.toast('Текстовый документ собран и выгружен ✓','ok');
+        previewWrap.innerHTML = previewHTML(text);
+        const blob = new Blob(['﻿' + text], { type:'text/plain;charset=utf-8' });
+        U.download(base + '.txt', blob);
+        ctx.toast('Текстовый документ собран и выгружен ✓', 'ok');
       }
     });
 
-    /* ---- init ---- */
+    /* ====================================================================
+       14. ЧЕРНОВИКИ (ctx.store)
+       ==================================================================== */
+    function loadDrafts(){ const a = ctx.store.get(DRAFTS_KEY, []); return Array.isArray(a) ? a : []; }
+    function saveDrafts(a){ ctx.store.set(DRAFTS_KEY, a); }
+
+    root.querySelector('#lic-save-draft').addEventListener('click', async () => {
+      const v = collect();
+      const dt = docTypes.find(d => d.id === state.docType);
+      const def = v.name || (dt ? dt.name : 'Черновик');
+      const title = await U.prompt({ title:'Сохранить черновик', label:'Название черновика', value:def, required:true, ok:'Сохранить' });
+      if (title == null) return;
+      const list = loadDrafts();
+      list.unshift({
+        id: 'dft_' + Date.now().toString(36),
+        title: String(title).trim(),
+        form: state.form, docType: state.docType, docName: dt ? dt.name : '',
+        vals: v, savedAt: new Date().toISOString()
+      });
+      saveDrafts(list.slice(0, 50));
+      renderDrafts();
+      ctx.toast('Черновик сохранён ✓', 'ok');
+    });
+
+    function applyDraft(d){
+      if (d.form && d.form !== state.form) setForm(d.form);
+      if (d.docType){ state.docType = d.docType; }
+      // тип мог быть скрыт фильтром — сбрасываем фильтр, чтобы он отобразился
+      state.docFilter = ''; docFilter.value = '';
+      fillTypes();
+      setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d.vals || {}));
+      runValidation(); updateCompleteness();
+      root.scrollTo ? root.scrollTo({ top:0 }) : null;
+      ctx.toast('Черновик «' + (d.title || '') + '» загружен', 'ok');
+    }
+
+    function renderDrafts(){
+      const list = loadDrafts();
+      if (!list.length){
+        draftsWrap.innerHTML = U.empty('🗂️', 'Черновиков пока нет. Заполните реквизиты и нажмите «Сохранить текущий как черновик».');
+        return;
+      }
+      const rows = list.map(d => ({
+        title: d.title || '—',
+        meta: `${d.form || ''}${d.docName ? ' · ' + d.docName : ''}`,
+        inn: (d.vals && d.vals.inn) || '—',
+        when: new Date(d.savedAt || Date.now()).toLocaleDateString('ru-RU'),
+        _d: d
+      }));
+      draftsWrap.innerHTML = U.table(rows, [
+        { key:'title', label:'Черновик', render:(val, r) => `<strong>${E(val)}</strong><div class="foot">${E(r.meta)}</div>` },
+        { key:'inn',   label:'ИНН', mono:true },
+        { key:'when',  label:'Сохранён', align:'right' },
+        { key:'_act',  label:'', align:'right', render:(_x, r) =>
+            `<button class="btn ghost sm" data-load="${E(r._d.id)}">Загрузить</button>` +
+            `<button class="btn ghost sm" data-del="${E(r._d.id)}" aria-label="Удалить черновик">✕</button>` }
+      ], { empty:'Черновиков нет.' });
+      draftsWrap.querySelectorAll('[data-load]').forEach(b => b.onclick = () => {
+        const d = loadDrafts().find(x => x.id === b.dataset.load); if (d) applyDraft(d);
+      });
+      draftsWrap.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+        const yes = await U.confirm({ title:'Удалить черновик', message:'Удалить этот черновик безвозвратно?', ok:'Удалить', danger:true });
+        if (!yes) return;
+        saveDrafts(loadDrafts().filter(x => x.id !== b.dataset.del));
+        renderDrafts(); ctx.toast('Черновик удалён', 'info');
+      });
+    }
+
+    /* ====================================================================
+       15. КАТАЛОГ ТИПОВ ДОКУМЕНТОВ (справочник)
+       ==================================================================== */
+    function renderCatalog(){
+      const wrap = root.querySelector('#catalog-wrap');
+      const rows = docTypes.map(d => ({
+        name: d.name,
+        forms: d.forms,
+        _id: d.id,
+        avail: d.forms.indexOf(state.form) >= 0
+      }));
+      wrap.innerHTML = U.table(rows, [
+        { key:'name', label:'Тип документа', render:(val, r) =>
+            `${E(val)} ${r.avail ? '' : '<span class="badge" title="недоступен для выбранной формы">не для ' + E(state.form) + '</span>'}` },
+        { key:'forms', label:'Формы', width:'130px', render:(val) =>
+            val.map(f => `<span class="badge${f===state.form?' info':''}">${E(f)}</span>`).join(' ') },
+        { key:'_pick', label:'', align:'right', render:(_x, r) =>
+            r.avail ? `<button class="btn ghost sm" data-pick="${E(r._id)}">Выбрать</button>` : '' }
+      ], { empty:'Справочник пуст.', maxHeight:'300px' });
+      wrap.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+        state.docFilter = ''; docFilter.value = '';
+        state.docType = b.dataset.pick; fillTypes();
+        sel.focus();
+        ctx.toast('Тип документа выбран', 'ok');
+      });
+    }
+
+    /* ====================================================================
+       16. INIT
+       ==================================================================== */
     fillTypes();
     renderFields();
+    renderDrafts();
+    renderCatalog();
   }
 });
