@@ -1,0 +1,335 @@
+{
+  "fields": [
+    {
+      "placeholder": "{EXPERT_ORG_FULL_NAME}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_ORG_SHORT_NAME}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_ORG_INN}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_ORG_OGRN}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_ORG_ADDRESS}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_FULL_NAME}",
+      "category": "Данные эксперта",
+      "source": "Дипломы",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{EXPERT_FULL_NAME_GENITIVE}",
+      "category": "Данные эксперта",
+      "source": "Дипломы",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{CERTIFICATE_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{CERTIFICATE_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{ATTESTAT_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{ATTESTAT_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 1: АККРЕДИТАЦИЯ"
+    },
+    {
+      "placeholder": "{ISO_ORG_FULL_NAME}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_ORG_INN}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_ORG_ADDRESS}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_OKVED_CODES}",
+      "category": "Данные организации",
+      "source": "ЕГРЮЛ",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_EXPERT_FULL_NAME}",
+      "category": "Данные эксперта",
+      "source": "Дипломы",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_STANDARDS}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_CERT_REG_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_CERT_START_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_CERT_END_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{ISO_PROTOCOL_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 2: ИСО"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_FULL_NAME}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_NAME_GENITIVE}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_NAME_GENITIVE2}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_EDUCATION}",
+      "category": "Данные обучающегося",
+      "source": "Дипломы",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_WORKPLACE}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_STUDENT_POSITION}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_COURSE_START_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_COURSE_END_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_DIPLOMA_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROF_PROTOCOL_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 3: Профка ПБ"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_FULL_NAME}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_NAME_GENITIVE}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_NAME_GENITIVE2}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_EDUCATION}",
+      "category": "Данные обучающегося",
+      "source": "Дипломы",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_WORKPLACE}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_STUDENT_POSITION}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_COURSE_START_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_COURSE_END_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_DIPLOMA_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{PROFPP_PROTOCOL_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 4: Профка ПП"
+    },
+    {
+      "placeholder": "{UPK_STUDENT_FULL_NAME}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{UPK_STUDENT_WORKPLACE}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{UPK_STUDENT_POSITION}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{UPK_CERTIFICATE_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{UPK_CERTIFICATE_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{UPK_PROTOCOL_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 5: УПК 178"
+    },
+    {
+      "placeholder": "{MPB_STUDENT_FULL_NAME}",
+      "category": "Данные обучающегося",
+      "source": "СНИЛС",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_STUDENT_WORKPLACE}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_STUDENT_POSITION}",
+      "category": "Данные обучающегося",
+      "source": "Заявка",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_COURSE_NAME}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_COURSE_CODE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_CERTIFICATE_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_CERTIFICATE_DATE}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    },
+    {
+      "placeholder": "{MPB_PROTOCOL_NUMBER}",
+      "category": "Реквизиты",
+      "source": "Яндекс форма",
+      "package": "ПАКЕТ 6: УПК МПБ"
+    }
+  ],
+  "count": 55
+}
