@@ -311,7 +311,7 @@ SensorApp.register({
       const tile = (label, valueHtml, opts) => {
         opts = opts || {};
         const bar = opts.pct != null
-          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${opts.pct}" aria-valuemin="0" aria-valuemax="100">
+          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${opts.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
                <span style="width:${clampPct(opts.pct)}%;background:${opts.color||'var(--accent)'}"></span>
              </div>` : '';
         // опциональный data-jump делает плитку кликабельной (переход к блоку-фильтру)
@@ -379,6 +379,7 @@ SensorApp.register({
       const more = flagged.length-top.length;
       const chips = top.map(f=>{
         const col = colorFor(f.st);
+        const txtCol = textColorFor(f.st);
         const arrow = f.m.invert ? ' ↓' : '';
         return `<button type="button" class="rnp-att-chip" data-att-bi="${f.bi}" data-att-name="${esc(f.m.name)}"
             title="${esc(f.block)} · план ${esc(fmt(f.m.plan,f.m.unit))} / факт ${esc(fmt(f.m.fact,f.m.unit))}"
@@ -387,7 +388,7 @@ SensorApp.register({
                    max-width:280px;transition:background var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease)">
             <span aria-hidden="true" style="width:7px;height:7px;border-radius:50%;background:${col};flex:0 0 7px"></span>
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.m.name)}${arrow}</span>
-            <span class="mono" style="color:${col};font-weight:600;font-size:11.5px">${scorePct(f.m)}%</span>
+            <span class="mono" style="color:${txtCol};font-weight:600;font-size:11.5px">${scorePct(f.m)}%</span>
           </button>`;
       }).join('');
       const errC = flagged.filter(f=>f.st==='err').length;
@@ -425,7 +426,7 @@ SensorApp.register({
     function renderBlockCard(b){
       const metrics = filterMetrics(b.metrics||[]);
       const blockScore = blockAvg(b);
-      const blockCls = colorFor(blockScore>=95?'ok':blockScore>=80?'warn':'err');
+      const blockCls = textColorFor(blockScore>=95?'ok':blockScore>=80?'warn':'err');
       const head =
         `<h3>${esc(b.name)}
            ${b.owner?`<span class="badge" style="vertical-align:1px">${esc(b.owner)}</span>`:''}
@@ -622,7 +623,7 @@ SensorApp.register({
       const tile = (label, valHtml, sub, opts)=>{
         opts = opts||{};
         const bar = opts.pct!=null
-          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${clampPct(opts.pct)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${clampPct(opts.pct)}%;background:${opts.color||'var(--accent)'}"></span></div>`
+          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${clampPct(opts.pct)}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}"><span style="width:${clampPct(opts.pct)}%;background:${opts.color||'var(--accent)'}"></span></div>`
           : '';
         return `<div class="card" style="padding:15px 17px;display:flex;flex-direction:column">
             <div class="hint" style="margin:0 0 7px">${esc(label)}</div>
@@ -1292,6 +1293,9 @@ SensorApp.register({
 
     /* ════════════════════════ УТИЛИТЫ ════════════════════════ */
     function colorFor(st){ return st==='ok'?'var(--ok)':st==='warn'?'var(--warn)':st==='err'?'var(--err)':'var(--ink)'; }
+    // Текстовый вариант семантического цвета: тёмные -d токены проходят контраст AA
+    // на светлом фоне для мелкого текста (colorFor — яркий, только для заливок/точек).
+    function textColorFor(st){ return st==='ok'?'var(--ok-d)':st==='warn'?'var(--warn-d)':st==='err'?'var(--err-d)':'var(--ink)'; }
     function clampPct(v){ v=Number(v)||0; return Math.max(0, Math.min(100, Math.round(v))); }
     function fmt(v, unit){
       if(v==null||v==='') return '—';

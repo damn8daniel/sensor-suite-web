@@ -10,23 +10,54 @@ window.SensorUI = (function () {
     setTimeout(()=>{ t.style.opacity='0'; t.style.transition='.3s'; setTimeout(()=>t.remove(),300); }, 3200);
   }
   function modal(title, bodyHTML){
+    const titleId = 'mdl_' + Math.random().toString(36).slice(2, 8);
     const bg = document.createElement('div'); bg.className='modal-bg';
-    bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${escape(title)}">`+
+    bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${escape(title)}" aria-labelledby="${titleId}">`+
                    `<button class="modal-x" type="button" aria-label="Закрыть">×</button>`+
-                   `<h3>${escape(title)}</h3><div class="modal-body"></div></div>`;
+                   `<h3 id="${titleId}">${escape(title)}</h3><div class="modal-body"></div></div>`;
     bg.querySelector('.modal-body').innerHTML = bodyHTML || '';
+    const dialog = bg.querySelector('.modal');
+    const prevFocus = document.activeElement; // вернём фокус после закрытия
     let closed = false;
     bg.addEventListener('click', e=>{ if(e.target===bg) close(); });
     bg.querySelector('.modal-x').addEventListener('click', close);
-    function onKey(e){ if(e.key==='Escape'){ e.stopPropagation(); close(); } }
+    // фокус-ловушка: Tab/Shift+Tab по фокусируемым внутри диалога, Esc — закрыть
+    function focusables(){
+      return [...dialog.querySelectorAll(
+        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+      )].filter(el => el.offsetParent !== null || el === document.activeElement);
+    }
+    function onKey(e){
+      if(e.key==='Escape'){ e.stopPropagation(); close(); return; }
+      if(e.key==='Tab'){
+        const f = focusables();
+        if(!f.length){ e.preventDefault(); dialog.focus(); return; }
+        const first = f[0], last = f[f.length-1], a = document.activeElement;
+        if(e.shiftKey && (a===first || !dialog.contains(a))){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey && (a===last || !dialog.contains(a))){ e.preventDefault(); first.focus(); }
+      }
+    }
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(bg);
-    requestAnimationFrame(()=>bg.classList.add('show'));
+    requestAnimationFrame(()=>{
+      bg.classList.add('show');
+      // если вызывающий код (confirm/prompt) уже увёл фокус внутрь — не перебиваем
+      if(dialog.contains(document.activeElement)) return;
+      // иначе уводим фокус внутрь диалога: первый осмысленный контрол, иначе сам диалог
+      const f = focusables();
+      const target = f.find(el => !el.classList.contains('modal-x')) || f[0];
+      if(target){ try{ target.focus(); }catch(e){} }
+      else { dialog.setAttribute('tabindex','-1'); try{ dialog.focus(); }catch(e){} }
+    });
     function close(){
       if(closed) return; closed = true;
       document.removeEventListener('keydown', onKey, true);
       bg.dispatchEvent(new CustomEvent('modal:close'));
       bg.classList.remove('show');
+      // вернуть фокус элементу, с которого открыли (если он ещё в DOM)
+      if(prevFocus && typeof prevFocus.focus==='function' && document.contains(prevFocus)){
+        try{ prevFocus.focus(); }catch(e){}
+      }
       setTimeout(()=>bg.remove(), 160);
     }
     return { el: bg, body: bg.querySelector('.modal-body'), close };
@@ -38,7 +69,11 @@ window.SensorUI = (function () {
   }
   const spinner = '<span class="spinner"></span>';
   function field(label, inputHTML, tok){
-    return `<div class="field"><label>${escape(label)} ${tok?`<span class="tok">${escape(tok)}</span>`:''}</label>${inputHTML}</div>`;
+    // a11y: связываем <label> с контролом через for=, если у него есть id —
+    // даёт доступное имя для select/input (axe: label / select-name). DOM не меняется.
+    const idm = /\sid=["']([^"']+)["']/.exec(inputHTML || '');
+    const forAttr = idm ? ` for="${escape(idm[1])}"` : '';
+    return `<div class="field"><label${forAttr}>${escape(label)} ${tok?`<span class="tok">${escape(tok)}</span>`:''}</label>${inputHTML}</div>`;
   }
   function card(title, hint, bodyHTML){
     return `<div class="card"><h3>${escape(title)}</h3>${hint?`<p class="hint">${escape(hint)}</p>`:''}${bodyHTML||''}</div>`;
@@ -79,9 +114,15 @@ window.SensorUI = (function () {
     if (!rows.length){
       return empty('🔍', opts.empty || 'Нет данных для отображения.');
     }
-    const thead = '<thead><tr>' + cols.map(c =>
-      `<th${c.align ? ` style="text-align:${c.align}"` : ''}>${escape(c.label != null ? c.label : c.key)}</th>`
-    ).join('') + '</tr></thead>';
+    const thead = '<thead><tr>' + cols.map(c => {
+      const lbl = c.label != null ? c.label : c.key;
+      // a11y: пустой заголовок (например колонка действий) недопустим — даём
+      // скрытое доступное имя, визуально ничего не меняется (axe: empty-table-header).
+      const inner = (lbl != null && String(lbl).trim() !== '')
+        ? escape(lbl)
+        : `<span class="sr-only">${escape(c.srLabel || 'Действия')}</span>`;
+      return `<th${c.align ? ` style="text-align:${c.align}"` : ''}>${inner}</th>`;
+    }).join('') + '</tr></thead>';
     const tbody = '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
       const raw = r[c.key];
       const html = c.render ? c.render(raw, r) : escape(raw == null ? '' : raw);

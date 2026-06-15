@@ -245,7 +245,7 @@ SensorApp.register({
 
       const selBlock = (key, label, vals, cur)=> rk[key] && vals.length
         ? U.field(label,
-            `<select data-filter="${key}">
+            `<select data-filter="${key}" aria-label="${esc(label)}">
                <option value="">Все (${vals.length})</option>
                ${vals.map(v=>`<option value="${esc(v)}"${v===cur?' selected':''}>${esc(v)}</option>`).join('')}
              </select>`)

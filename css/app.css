@@ -10,7 +10,7 @@
   /* Базовая палитра (light) */
   --bg:#f5f6f9; --bg-2:#eef1f5;
   --panel:#ffffff; --panel-2:#f7f9fb; --panel-3:#fbfcfd;
-  --ink:#141925; --ink-2:#4a5468; --ink-3:#6b7585; --muted:#727c8c;
+  --ink:#141925; --ink-2:#4a5468; --ink-3:#6b7585; --muted:#646e7e;
   --line:#e7ebf1; --line-2:#d8dee7; --line-3:#cbd3de;
 
   /* Бренд / акцент */
@@ -20,7 +20,7 @@
   /* Семантика */
   --navy:#1f2a44; --navy-ink:#ffffff;
   --ok:#1f9d63; --ok-d:#16794c; --ok-soft:#e7f6ee;
-  --warn:#c8881a; --warn-d:#9c6a14; --warn-soft:#fdf3e3;
+  --warn:#c8881a; --warn-d:#8a5d12; --warn-soft:#fdf3e3;
   --err:#d64545; --err-d:#b53333; --err-soft:#fdecec;
   --info:#2f6fd6; --info-soft:#e8f0fd;
 
@@ -129,6 +129,11 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,
 }
 /* Ссылки внутри текста: ринг плотнее к глифам */
 a:focus-visible{border-radius:var(--radius-xs);text-decoration:underline}
+
+/* Доступность: визуально скрытое, но читаемое скринридерами имя (для пустых
+   заголовков таблиц-действий, иконок и т.п.). Не влияет на раскладку. */
+.sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
 
 /* ---------- 3. Кастомный скроллбар ---------- */
 *{scrollbar-width:thin;scrollbar-color:var(--line-3) transparent}

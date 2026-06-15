@@ -311,7 +311,7 @@ SensorApp.register({
       const switcher = keys.map(k=>{
         const s = scriptStats(k);
         const label = (scripts[k].title||k).split('(')[0].trim();
-        return `<button class="pill${k===scriptKey?' active':''}" data-sk="${esc(k)}">${esc(label)}${s.total?` <span class="t-count" style="font-variant-numeric:tabular-nums;opacity:.7;font-size:11.5px;margin-left:2px">${s.done}/${s.total}</span>`:''}</button>`;
+        return `<button class="pill${k===scriptKey?' active':''}" data-sk="${esc(k)}">${esc(label)}${s.total?` <span class="t-count" style="font-variant-numeric:tabular-nums;font-size:11.5px;margin-left:2px">${s.done}/${s.total}</span>`:''}</button>`;
       }).join('');
 
       const introHtml = sc.intro.length

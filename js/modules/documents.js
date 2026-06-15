@@ -454,7 +454,7 @@ SensorApp.register({
       top.innerHTML =
         `<h3>Шаблон документа ${badgeEnv()}</h3>
          <p class="hint">Перетащите .docx-шаблон в зону ниже или выберите файл. Поддерживаются поля <code class="mono">{ПОЛЕ}</code>, повторяющиеся поля и вложенные секции <code class="mono">{#список}…{/список}</code>. Приложение само найдёт поля и построит форму.</p>
-         <label class="dropzone" id="doc-dz" tabindex="0" role="button" aria-label="Загрузить .docx-шаблон">
+         <label class="dropzone" id="doc-dz" tabindex="0" aria-label="Загрузить .docx-шаблон">
            <input id="doc-tpl" type="file" accept=".docx" hidden>
            <span class="dz-ic" aria-hidden="true">⬆</span>
            <span class="dz-main">Перетащите <b>.docx</b> сюда</span>

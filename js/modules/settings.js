@@ -183,9 +183,31 @@ SensorApp.register({
          </div>`);
     }
 
+    /* ───────────────────────── Режим (роль) ─────────────────────────
+       Сегмент-контрол «Руководитель / Оператор». Смена мгновенно
+       перестраивает навигацию через ctx.app.setRole. */
+    function roleCardHTML(){
+      const app = ctx.app || {};
+      const R = (app.roles) || (typeof window!=='undefined' && window.SUITE_ROLES) || { order:['manager'], labels:{}, hints:{} };
+      const cur = (app.getRole ? app.getRole() : null) || R.defaultRole || 'manager';
+      const order = Array.isArray(R.order) && R.order.length ? R.order : Object.keys(R.modules || { manager:null });
+      const seg = order.map(id => {
+        const label = (R.labels && R.labels[id]) || id;
+        return `<button type="button" class="role-opt${id===cur?' active':''}" data-role="${esc(id)}" aria-pressed="${id===cur?'true':'false'}">${esc(label)}</button>`;
+      }).join('');
+      const hint = (R.hints && R.hints[cur]) || '';
+      return ui.card('Режим работы',
+        'Набор доступных модулей зависит от режима. Руководителю доступны все разделы, оператору — операционные (без руководительской аналитики).',
+        `<div class="role-seg" id="role-seg" role="group" aria-label="Режим работы">${seg}</div>
+         <p class="role-hint" id="role-hint" aria-live="polite">${esc(hint)}</p>`);
+    }
+
     /* ───────────────────────── Оформление (тема) ───────────────────────── */
     function themeCardHTML(){
-      const theme = store.get('theme', document.documentElement.getAttribute('data-theme') || 'light');
+      // выбор пользователя: 'light'|'dark'|'auto' (берём из app, иначе из store)
+      const app = ctx.app || {};
+      const theme = (app.getThemePref ? app.getThemePref() : null)
+        || store.get('theme', document.documentElement.getAttribute('data-theme') || 'light');
       const opt = (id, label, sub) =>
         `<button type="button" class="theme-opt${theme===id?' active':''}" data-theme="${id}" aria-pressed="${theme===id}">
            <span class="theme-swatch theme-swatch-${id}" aria-hidden="true"></span>
@@ -193,10 +215,30 @@ SensorApp.register({
            <span class="theme-check" aria-hidden="true">✓</span>
          </button>`;
       return ui.card('Оформление',
-        'Светлая или тёмная тема интерфейса. Выбор сохраняется в этом браузере.',
+        'Светлая, тёмная или системная тема интерфейса. Выбор сохраняется в этом браузере.',
         `<div class="theme-grid" id="theme-tabs" role="group" aria-label="Тема интерфейса">
            ${opt('light','Светлая','День, мягкий фон')}
            ${opt('dark','Тёмная','Ночь, низкая яркость')}
+           ${opt('auto','Системная','Как в настройках ОС')}
+         </div>`);
+    }
+
+    /* ───────────────────────── Знакомство (онбординг) ─────────────────────────
+       Кнопка перезапуска приветственного тура. Сбрасывает флаг 'onboarded' и
+       показывает тур с первого шага (через ctx.app.resetOnboarding). */
+    function onboardingCardHTML(){
+      const app = ctx.app || {};
+      const can = typeof app.resetOnboarding === 'function';
+      return ui.card('Знакомство с приложением',
+        'Приветственный тур: режим работы, обзор модулей, интеграции и горячие клавиши. Можно пройти заново в любой момент.',
+        `<div class="data-rows">
+           <div class="data-row">
+             <div class="data-row-main">
+               <div class="data-row-title">Приветственный тур</div>
+               <div class="data-row-sub">Короткий тур из пяти шагов. Полезно при первом запуске или для коллег.</div>
+             </div>
+             <button class="btn sm" id="onboarding-restart"${can ? '' : ' disabled title="Тур недоступен в этой сборке"'}>🎬 Пройти тур заново</button>
+           </div>
          </div>`);
     }
 
@@ -366,6 +408,11 @@ SensorApp.register({
       .theme-swatch-dark{background:linear-gradient(135deg,#0d1015 0 60%,#161a21 60% 100%)}
       .theme-swatch-dark::after{content:"";position:absolute;left:7px;top:8px;width:16px;height:4px;border-radius:2px;
         background:#e4503f;box-shadow:0 7px 0 #2f3744,0 14px 0 #2f3744}
+      /* системная тема — половина светлая, половина тёмная (диагональ) */
+      .theme-swatch-auto{background:linear-gradient(135deg,#f5f6f9 0 50%,#0d1015 50% 100%)}
+      .theme-swatch-auto::after{content:"";position:absolute;left:7px;top:8px;width:16px;height:4px;border-radius:2px;
+        background:linear-gradient(90deg,#d62f1e 0 50%,#e4503f 50% 100%);
+        box-shadow:0 7px 0 #9aa6b5,0 14px 0 #9aa6b5}
       .theme-opt-main{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
       .theme-opt-title{font-size:13.5px;font-weight:600}
       .theme-opt-sub{font-size:11.5px;color:var(--muted)}
@@ -405,7 +452,7 @@ SensorApp.register({
       { id: 'integrations', label: 'Интеграции',   icon: '🔌', count: defs.length,
         html: intHeadHTML + intCardsHTML },
       { id: 'ai',         label: 'AI-ассистент',  icon: '✨', html: llmCardHTML() },
-      { id: 'appearance', label: 'Оформление',    icon: '🎨', html: themeCardHTML() },
+      { id: 'appearance', label: 'Оформление',    icon: '🎨', html: roleCardHTML() + themeCardHTML() + onboardingCardHTML() },
       { id: 'data',       label: 'Данные',        icon: '🗄️', html: dataCardHTML() },
       { id: 'about',      label: 'О приложении',  icon: 'ℹ️', html: aboutCardHTML() }
     ];
@@ -672,18 +719,56 @@ SensorApp.register({
 
     /* ───────────────────────── биндинги темы ───────────────────────── */
     function bindTheme(){
+      const NAMES = { light:'светлая', dark:'тёмная', auto:'системная' };
       root.querySelectorAll('#theme-tabs .theme-opt').forEach(opt => {
         if (opt._bound) return; opt._bound = true;
         opt.onclick = () => {
-          const t = opt.dataset.theme;
-          store.set('theme', t);
-          document.documentElement.setAttribute('data-theme', t);
+          const t = opt.dataset.theme; // 'light'|'dark'|'auto'
+          // централизованный сеттер: пишет store, применяет data-theme,
+          // подписывается/отписывается от системной темы для 'auto'
+          if (ctx.app && ctx.app.setTheme) ctx.app.setTheme(t);
+          else { store.set('theme', t); document.documentElement.setAttribute('data-theme', t); }
           root.querySelectorAll('#theme-tabs .theme-opt').forEach(x => {
             const on = x === opt; x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
           });
-          ctx.toast('Тема: ' + (t === 'dark' ? 'тёмная' : 'светлая'), 'info');
+          ctx.toast('Тема: ' + (NAMES[t] || t), 'info');
         };
       });
+    }
+
+    /* ───────────────────────── биндинги режима (роли) ─────────────────────────
+       Сегмент-контрол: смена роли через ctx.app.setRole (мгновенно перестраивает
+       навигацию). Подсказка под контролом обновляется под выбранную роль. */
+    function bindRole(){
+      const app = ctx.app || {};
+      const R = (app.roles) || (typeof window!=='undefined' && window.SUITE_ROLES) || { labels:{}, hints:{} };
+      root.querySelectorAll('#role-seg .role-opt').forEach(opt => {
+        if (opt._bound) return; opt._bound = true;
+        opt.onclick = () => {
+          const r = opt.dataset.role;
+          if (app.setRole) app.setRole(r);
+          else store.set('role', r);
+          root.querySelectorAll('#role-seg .role-opt').forEach(x => {
+            const on = x === opt; x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
+          });
+          const hintEl = root.querySelector('#role-hint');
+          if (hintEl) hintEl.textContent = (R.hints && R.hints[r]) || '';
+          ctx.toast('Режим: ' + ((R.labels && R.labels[r]) || r), 'info');
+        };
+      });
+    }
+
+    /* ───────────────────────── биндинг онбординга ───────────────────────── */
+    function bindOnboarding(){
+      const btn = root.querySelector('#onboarding-restart');
+      if (btn && !btn._bound){ btn._bound = true; btn.onclick = () => {
+        const app = ctx.app || {};
+        if (typeof app.resetOnboarding === 'function'){
+          app.resetOnboarding();          // сбрасывает флаг и показывает тур заново
+        } else {
+          ctx.toast('Тур недоступен в этой сборке', 'info');
+        }
+      }; }
     }
 
     /* ───────────────────────── биндинги данных ───────────────────────── */
@@ -764,7 +849,9 @@ SensorApp.register({
       bindReveals();
       bindIntegrations();
       bindLlm();
+      bindRole();
       bindTheme();
+      bindOnboarding();
       bindData();
     }
     bindCurrent();

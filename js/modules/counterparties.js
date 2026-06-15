@@ -508,9 +508,9 @@ SensorApp.register({
 
       elBar.innerHTML =
         `<div class="cp-bar-row">
-           <input id="cp-search" class="cp-search" type="search" placeholder="Поиск: название, ИНН, ОГРН, адрес…"
+           <input id="cp-search" class="cp-search" type="search" aria-label="Поиск контрагентов" placeholder="Поиск: название, ИНН, ОГРН, адрес…"
                   autocomplete="off" spellcheck="false" value="${E(view.q)}" ${all.length ? '' : 'disabled'}>
-           <select id="cp-sort" title="Сортировка" ${all.length ? '' : 'disabled'}>
+           <select id="cp-sort" aria-label="Сортировка" title="Сортировка" ${all.length ? '' : 'disabled'}>
              <option value="recent"${view.sort === 'recent' ? ' selected' : ''}>Сначала новые</option>
              <option value="name"${view.sort === 'name' ? ' selected' : ''}>По названию</option>
              <option value="status"${view.sort === 'status' ? ' selected' : ''}>По статусу</option>
