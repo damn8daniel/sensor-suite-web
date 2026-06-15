@@ -33,11 +33,12 @@ window.SensorApp = (function () {
     // даже когда смена пришла извне их экрана (например из тура онбординга).
     document.dispatchEvent(new CustomEvent('role:change', { detail:{ role: r } }));
   }
-  // белый список модулей для роли ('settings' всегда добавляется), либо null = все
+  // белый список модулей для роли ('home'/'settings' всегда добавляются), либо null = все
   function roleAllowedIds(){
     const list = ROLES.modules ? ROLES.modules[getRole()] : null;
     if (!Array.isArray(list)) return null; // null = роль не ограничивает
     const set = new Set(list);
+    set.add('home');      // дашборд «Главная» доступен всем ролям
     set.add('settings');
     return set;
   }
@@ -54,6 +55,7 @@ window.SensorApp = (function () {
     if (!list && Array.isArray(CFG.enabledModules)) list = CFG.enabledModules.slice();
     if (!list) return null; // null = все
     const set = new Set(list);
+    set.add('home');     // дашборд «Главная» доступен всегда (как системный)
     set.add('settings'); // системные модули доступны всегда
     return set;
   }
@@ -65,6 +67,7 @@ window.SensorApp = (function () {
     if (!role)  return build;
     // пересечение: модуль виден, если разрешён И сборкой, И ролью
     const set = new Set([...build].filter(id => role.has(id)));
+    set.add('home');     // «Главная» доступна всегда, минуя пересечение
     set.add('settings');
     return set;
   }
@@ -123,14 +126,22 @@ window.SensorApp = (function () {
 
   function buildNav(){
     const nav = document.getElementById('nav');
-    const groups = {};
-    visibleModules().filter(m=>m.id!=='settings').forEach(m=>{ (groups[m.dept||'Прочее'] ||= []).push(m); });
+    // dept-less системные модули ('home' вверху, 'settings' вне навигации — у него
+    // отдельная ссылка в топбаре). Остальные группируем по отделам как раньше.
+    const navItemHTML = m =>
+      `<div class="nav-item" data-id="${m.id}" title="${SensorUI.escape(m.description||m.title)}"><span class="ic">${m.icon||'•'}</span><span>${SensorUI.escape(m.title)}</span></div>`;
+    const vis = visibleModules();
     let html = '';
+    // «Главная» — отдельным пунктом без заголовка группы, всегда первой.
+    const home = vis.find(m=>m.id==='home');
+    if (home) html += `<div class="nav-group" data-nav-home>${navItemHTML(home)}</div>`;
+    // отделённые модули (есть dept) — группируем; settings и home исключаем.
+    const groups = {};
+    vis.filter(m=>m.id!=='settings' && m.id!=='home' && m.dept)
+       .forEach(m=>{ (groups[m.dept] ||= []).push(m); });
     Object.keys(groups).forEach(dept=>{
       html += `<div class="nav-group"><h6>${SensorUI.escape(dept)}</h6>`;
-      groups[dept].sort((a,b)=>(a.order||99)-(b.order||99)).forEach(m=>{
-        html += `<div class="nav-item" data-id="${m.id}" title="${SensorUI.escape(m.description||m.title)}"><span class="ic">${m.icon||'•'}</span><span>${SensorUI.escape(m.title)}</span></div>`;
-      });
+      groups[dept].sort((a,b)=>(a.order||99)-(b.order||99)).forEach(m=>{ html += navItemHTML(m); });
       html += `</div>`;
     });
     nav.innerHTML = html;
@@ -176,6 +187,11 @@ window.SensorApp = (function () {
     const bc = document.getElementById('breadcrumb');
     if(!bc) return;
     const dept = m.dept || 'Прочее';
+    if (m.id==='home'){
+      // «Главная» — корневой дашборд, без префикса отдела
+      bc.innerHTML = `<span class="bc-seg cur">${SensorUI.escape(m.title)}</span>`;
+      return;
+    }
     bc.innerHTML = (m.id==='settings')
       ? `<span class="bc-seg">Система</span><span class="bc-sep">/</span><span class="bc-seg cur">${SensorUI.escape(m.title)}</span>`
       : `<span class="bc-seg">${SensorUI.escape(dept)}</span><span class="bc-sep">/</span><span class="bc-seg cur">${SensorUI.escape(m.title)}</span>`;
@@ -673,6 +689,7 @@ window.SensorApp = (function () {
 
   return { env, register, registerIntegration, registerCommand, start,
            openPalette, openShortcuts, navigate, refreshDemoBadge: updateDemoBadge,
+           visibleModules,            // модули, доступные текущей роли/сборке (для дашборда «Главная»)
            getRole, setRole, roles: ROLES, rebuildNav,
            setTheme, getThemePref,
            startOnboarding, resetOnboarding, onboardingDone,

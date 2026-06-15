@@ -273,6 +273,98 @@ window.SensorUI = (function () {
     } catch (e){ return false; }
   }
 
+  // printDoc(opts) — печать самодостаточного HTML-документа в новом окне.
+  //   opts:{ title, subtitle?, bodyHTML, meta?:[{label,value}], footer? }
+  //   bodyHTML — уже готовый HTML от вызывающего (он сам экранирует данные).
+  //   title/subtitle/meta экранируются здесь через escape().
+  //   Если окно не открылось (блокировщик / null) — тост-предупреждение, return false.
+  //   Печать (focus+print) обёрнута в try/catch: под jsdom-заглушкой это no-op.
+  //   Возвращает true при успешной записи документа.
+  function printDoc(opts){
+    opts = opts || {};
+    const win = (typeof window.open === 'function') ? window.open('', '_blank') : null;
+    if (!win){
+      toast('Разрешите всплывающие окна для печати', 'warn');
+      return false;
+    }
+    const title = opts.title != null ? String(opts.title) : '';
+    const subtitle = opts.subtitle != null ? String(opts.subtitle) : '';
+    const dateStr = new Date().toLocaleString('ru-RU');
+    const metaRows = (opts.meta || []).filter(Boolean).map(m =>
+      `<tr><th>${escape(m.label)}</th><td>${escape(m.value)}</td></tr>`).join('');
+    const metaHTML = metaRows
+      ? `<table class="pd-meta"><tbody>${metaRows}</tbody></table>` : '';
+    const subHTML = subtitle ? `<div class="pd-sub">${escape(subtitle)}</div>` : '';
+    const footHTML = opts.footer != null && String(opts.footer) !== ''
+      ? `<footer class="pd-foot">${escape(opts.footer)}</footer>` : '';
+    const css =
+      '*{box-sizing:border-box}' +
+      'html,body{margin:0;padding:0}' +
+      'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+        'color:#1a1a1a;line-height:1.5;font-size:14px;background:#fff}' +
+      '.pd-page{max-width:760px;margin:0 auto;padding:32px 28px}' +
+      '.pd-head{border-bottom:2px solid #1a1a1a;padding-bottom:12px;margin-bottom:18px;' +
+        'display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}' +
+      '.pd-head-main{min-width:0}' +
+      '.pd-title{font-size:22px;font-weight:700;margin:0}' +
+      '.pd-sub{font-size:14px;color:#555;margin-top:4px}' +
+      '.pd-head-aside{text-align:right;font-size:12px;color:#666;white-space:nowrap}' +
+      '.pd-brand{font-weight:600;color:#1a1a1a}' +
+      '.pd-meta{border-collapse:collapse;margin:0 0 18px;font-size:13px;width:100%}' +
+      '.pd-meta th{text-align:left;font-weight:600;color:#555;padding:3px 14px 3px 0;' +
+        'white-space:nowrap;vertical-align:top;width:1%}' +
+      '.pd-meta td{padding:3px 0;vertical-align:top}' +
+      '.pd-body{font-size:14px}' +
+      '.pd-body table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}' +
+      '.pd-body th,.pd-body td{border:1px solid #ccc;padding:6px 9px;text-align:left;vertical-align:top}' +
+      '.pd-body thead th{background:#f2f2f2;font-weight:600}' +
+      '.pd-foot{margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:12px;color:#666}' +
+      '@page{size:A4;margin:16mm}' +
+      '@media print{body{font-size:12pt}.pd-page{max-width:none;margin:0;padding:0}}';
+    const html =
+      '<!doctype html><html lang="ru"><head><meta charset="utf-8">' +
+      `<title>${escape(title)}</title><style>${css}</style></head><body>` +
+      '<div class="pd-page">' +
+        '<header class="pd-head"><div class="pd-head-main">' +
+          `<h1 class="pd-title">${escape(title)}</h1>${subHTML}</div>` +
+          `<div class="pd-head-aside"><div class="pd-brand">Сенсор</div><div>${escape(dateStr)}</div></div>` +
+        '</header>' +
+        metaHTML +
+        `<div class="pd-body">${opts.bodyHTML || ''}</div>` +
+        footHTML +
+      '</div></body></html>';
+    try {
+      const doc = win.document;
+      doc.open();
+      doc.write(html);
+      doc.close();
+    } catch (e){ /* запись документа не должна валить вызывающий код */ }
+    try {
+      win.focus();
+      win.print();
+    } catch (e){ /* под jsdom-заглушкой focus/print — no-op */ }
+    return true;
+  }
+
+  // printTable(title, columns, rows, opts?) — собирает простую HTML-таблицу и
+  //   зовёт printDoc (реестр / сверки). columns: ['Заголовок', ...] или
+  //   [{label, key?, align?}]; rows: массив объектов или массивов значений.
+  //   opts пробрасывается в printDoc (subtitle/meta/footer/title переопределяют).
+  function printTable(title, columns, rows, opts){
+    opts = opts || {};
+    columns = (columns || []).map(c => typeof c === 'string' ? { label: c } : (c || {}));
+    rows = rows || [];
+    const thead = '<thead><tr>' + columns.map(c =>
+      `<th${c.align ? ` style="text-align:${escape(c.align)}"` : ''}>${escape(c.label != null ? c.label : c.key)}</th>`
+    ).join('') + '</tr></thead>';
+    const tbody = '<tbody>' + rows.map(r => '<tr>' + columns.map((c, i) => {
+      const v = Array.isArray(r) ? r[i] : (c.key != null ? r[c.key] : undefined);
+      return `<td${c.align ? ` style="text-align:${escape(c.align)}"` : ''}>${escape(v == null ? '' : v)}</td>`;
+    }).join('') + '</tr>').join('') + '</tbody>';
+    const bodyHTML = `<table>${thead}${tbody}</table>`;
+    return printDoc(Object.assign({ title: title, bodyHTML: bodyHTML }, opts));
+  }
+
   // debounce(fn, wait) — отложенный вызов; .cancel() и .flush() доступны.
   function debounce(fn, wait){
     wait = wait == null ? 250 : wait;
@@ -284,5 +376,6 @@ window.SensorUI = (function () {
   }
 
   return { escape, toast, modal, download, spinner, field, card, empty,
-           badge, skeleton, table, tabs, confirm, prompt, copy, debounce };
+           badge, skeleton, table, tabs, confirm, prompt, copy, debounce,
+           printDoc, printTable };
 })();

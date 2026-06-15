@@ -207,6 +207,7 @@ SensorApp.register({
         `<div class="btn-row">
            <button class="btn primary" id="lic-gen" type="button">⤓ Сгенерировать .docx</button>
            <button class="btn" id="lic-gen-pkg" type="button" style="display:none">📦 Сгенерировать ВЕСЬ пакет</button>
+           <button class="btn" id="lic-print-pkg" type="button" aria-label="Печать чек-листа пакета" title="Распечатать чек-лист документов пакета">🖨 Печать чек-листа</button>
            <button class="btn" id="lic-preview" type="button">👁 Предпросмотр</button>
            <button class="btn" id="lic-copy" type="button">⧉ Копировать текст</button>
            <button class="btn ghost" id="lic-clear" type="button" style="margin-left:auto">Очистить форму</button>
@@ -856,6 +857,57 @@ SensorApp.register({
         ctx.toast('Текстовый документ собран и выгружен ✓', 'ok');
       }
     });
+
+    /* ====================================================================
+       13a2. ПЕЧАТЬ ЧЕК-ЛИСТА ПАКЕТА — список документов выбранной формы (ИП/ООО)
+       с реквизитами-плейсхолдерами и отметками «что собрать». НЕ трогает генерацию
+       .docx; печать самодостаточная через U.printDoc (под jsdom-заглушкой не падает).
+       ==================================================================== */
+    function printPkgChecklist(){
+      const v = collect();
+      const isIP = state.form === 'ИП';
+
+      // реквизиты-плейсхолдеры: значение из формы либо подсказка-плейсхолдер «‹…›»
+      const reqRows = fieldsForForm().map(f=>{
+        const val = (v[f.key] || '').trim();
+        const cell = val ? E(val) : `<span style="color:#999">‹${E(f.ph || f.label)}›</span>`;
+        return `<tr><th style="text-align:left;width:1%;white-space:nowrap;color:#555;font-weight:600;padding-right:14px;vertical-align:top">${E(f.label)}</th><td>${cell}</td></tr>`;
+      }).join('');
+
+      // документы пакета: для встроенных — «реальный шаблон», иначе — из каталога
+      const docs = typesForForm();
+      const docRows = docs.map(d=>{
+        const real = d.builtin && tplEntry(state.form, d.id);
+        const mark = real ? 'есть .docx-бланк' : 'формируется текстом';
+        return `<tr>
+          <td style="text-align:center;width:1%;font-weight:700;color:#888">☐</td>
+          <td>${E(d.name)}</td>
+          <td style="white-space:nowrap;color:#555">${mark}</td>
+        </tr>`;
+      }).join('');
+
+      const body =
+        `<h2 style="font-size:15px;margin:0 0 6px">Реквизиты ${isIP ? 'ИП' : 'организации'}</h2>` +
+        `<table>${reqRows}</table>` +
+        `<h2 style="font-size:15px;margin:18px 0 6px">Документы пакета (${docs.length})</h2>` +
+        `<table><thead><tr><th style="width:1%">✓</th><th>Документ</th><th>Источник</th></tr></thead><tbody>${docRows}</tbody></table>` +
+        `<p style="margin-top:14px;color:#555;font-size:12px">☐ — отметьте собранные документы. «‹…›» — реквизит ещё не заполнен (плейсхолдер).</p>`;
+
+      U.printDoc({
+        title: 'Чек-лист пакета документов — ' + state.form,
+        subtitle: (v.name ? v.name + ' · ' : '') + 'лицензирование МЧС',
+        meta: [
+          { label:'Форма', value: state.form },
+          { label:'Документов в пакете', value: String(docs.length) }
+        ],
+        bodyHTML: body,
+        footer: 'Сформировано в Сенсор Suite. Чек-лист носит вспомогательный характер; данные обрабатываются локально.'
+      });
+    }
+    {
+      const pb = root.querySelector('#lic-print-pkg');
+      if (pb) pb.addEventListener('click', printPkgChecklist);
+    }
 
     /* ====================================================================
        13b. ПАКЕТНАЯ ГЕНЕРАЦИЯ — все встроенные документы формы → один .zip

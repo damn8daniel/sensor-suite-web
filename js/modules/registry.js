@@ -32,7 +32,10 @@ SensorApp.register({
       run:()=>{ try{ window.dispatchEvent(new CustomEvent('registry:action', { detail:'import' })); }catch(e){} } },
     { id:'export', title:'Экспорт реестра в CSV', hint:'Выгрузить текущую выборку', icon:'📤',
       keywords:['экспорт','csv','выгрузить','скачать'],
-      run:()=>{ try{ window.dispatchEvent(new CustomEvent('registry:action', { detail:'export' })); }catch(e){} } }
+      run:()=>{ try{ window.dispatchEvent(new CustomEvent('registry:action', { detail:'export' })); }catch(e){} } },
+    { id:'print', title:'Печать выборки реестра', hint:'Распечатать текущую отфильтрованную таблицу', icon:'🖨',
+      keywords:['печать','распечатать','выборка','таблица'],
+      run:()=>{ try{ window.dispatchEvent(new CustomEvent('registry:action', { detail:'print' })); }catch(e){} } }
   ],
 
   mount(root, ctx){
@@ -266,6 +269,7 @@ SensorApp.register({
         `<div class="btn-row" style="margin-top:12px">
            ${xlsxAvailable ? `<button class="btn" id="reg-import">📥 Импорт .xlsx</button>` : ''}
            <button class="btn" id="reg-export">📤 Экспорт CSV</button>
+           <button class="btn" id="reg-print" aria-label="Печать выборки" title="Печать текущей выборки">🖨 Печать</button>
            <button class="btn ghost sm" id="reg-clear">Сбросить фильтры</button>
            <span class="spacer" style="flex:1"></span>
            <span class="muted" id="reg-count" style="font-size:12px"></span>
@@ -304,6 +308,7 @@ SensorApp.register({
 
       const imp = elControls.querySelector('#reg-import'); if(imp) imp.onclick = triggerImport;
       const exp = elControls.querySelector('#reg-export'); if(exp) exp.onclick = exportCSV;
+      const prn = elControls.querySelector('#reg-print'); if(prn) prn.onclick = printSelection;
       const clr = elControls.querySelector('#reg-clear');
       if(clr) clr.onclick = ()=>{ resetState(); renderControls(); renderTable(); };
     }
@@ -433,12 +438,41 @@ SensorApp.register({
     }
 
     /* ====================================================================
+       5b. ПЕЧАТЬ ТЕКУЩЕЙ ВЫБОРКИ (через ui.printTable)
+       ==================================================================== */
+    function printSelection(){
+      const rows = sortRows(filteredRows());
+      if(!rows.length){ ctx.toast('Нет строк для печати','warn'); return; }
+      const total = model.rows.length;
+      const columns = model.schema.map(c=>({ label: c.label, key: c.key }));
+      const data = rows.map(r=>{
+        const o = {};
+        model.schema.forEach(c=>{ o[c.key] = cellText(r, c.key); });
+        return o;
+      });
+      const meta = [
+        { label:'Источник', value: imported ? ('импорт: ' + imported) : (model.demo ? 'обезличенный образец' : 'реестр УЦ') },
+        { label:'Показано', value: rows.length===total ? ('все записи: ' + total) : (rows.length + ' из ' + total) }
+      ];
+      if(state.q)       meta.push({ label:'Поиск', value: state.q });
+      if(state.program) meta.push({ label:'Программа', value: state.program });
+      if(state.manager) meta.push({ label:'Менеджер', value: state.manager });
+      if(state.status)  meta.push({ label:'Статус', value: state.status });
+      U.printTable('Реестр УЦ — выборка', columns, data, {
+        subtitle: 'Текущая отфильтрованная выборка',
+        meta: meta,
+        footer: 'Сформировано в Сенсор Suite. Данные обрабатываются локально.'
+      });
+    }
+
+    /* ====================================================================
        6. ДЕЙСТВИЯ ПАЛИТРЫ (через событие)
        ==================================================================== */
     function onAction(e){
       const what = e && e.detail;
       if(what==='import') triggerImport();
       else if(what==='export') exportCSV();
+      else if(what==='print') printSelection();
     }
     window.addEventListener('registry:action', onAction);
 

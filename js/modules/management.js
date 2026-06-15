@@ -568,6 +568,7 @@ SensorApp.register({
         'Тянет сделки из amoCRM (leads), разносит их по продуктам и регионам и сверяет фактическую выручку с планом РНП. «Предохранитель» подсвечивает несостыковки: непроставленные платежи, расхождение плательщик ≠ получатель и отставание от ран-рейта. Без ключей amoCRM работает на обезличенных демо-данных (mock) — цифры показательные, не реальные.',
         `<div class="btn-row">
            <button class="btn primary" id="rnp-recon-run">🛡 Собрать из amoCRM</button>
+           ${recon.collected ? `<button class="btn" id="rnp-recon-print" aria-label="Печать сверки" title="Печать результата сверки">🖨 Печать сверки</button>` : ''}
            <button class="btn ghost sm" id="rnp-recon-clear" title="Очистить результат сверки"${recon.collected?'':' disabled'}>↺ Сбросить</button>
            <span class="spacer" style="flex:1"></span>
            ${recon.collected
@@ -762,12 +763,103 @@ SensorApp.register({
       scope.addEventListener('click', e=>{
         if(e.target.closest('#rnp-recon-run') || e.target.closest('#rnp-recon-run-2')){ runReconcile(); return; }
         if(e.target.closest('#rnp-recon-clear')){ clearReconcile(); return; }
+        if(e.target.closest('#rnp-recon-print')){ printRecon(); return; }
       });
     }
 
     function clearReconcile(){
       recon.collected = null; recon.note=''; recon.source=''; recon.at=null; recon.busy=false;
       refreshActivePanel();
+    }
+
+    /* Печать результата сверки: KPI + таблица «План / Факт / Δ» по продуктам с итогами
+       + разнос по регионам + предупреждения «предохранителя». Через ui.printDoc
+       (самодостаточный HTML; под jsdom-заглушкой window.open печать не падает). */
+    function printRecon(){
+      const c = recon.collected;
+      if(!c){ ctx.toast('Сначала соберите данные для сверки','warn'); return; }
+      const rr = c.runRate || {};
+
+      // KPI
+      const kpiRows = [
+        { label:'Собрано сделок', value: `${c.dealsTotal} (выиграно ${c.dealsWon} · в работе ${c.dealsOpen} · отказ ${c.dealsLost})` },
+        { label:'Выручка (выигранные)', value: fmt(c.wonSum,'₽') },
+        { label:'Ран-рейт месяца', value: `${rr.pct||0}% (прогноз ${fmt(rr.projected||0,'₽')} из плана ${fmt(rr.monthPlan||0,'₽')}, день ${rr.days||0}/${rr.monthDays||0})` },
+        { label:'Предохранитель', value: c.fuses.length ? `${c.fuses.length} несост. (${c.fuses.filter(f=>f.risk==='err').length} критич. · ${c.fuses.filter(f=>f.risk==='warn').length} риск)` : 'чисто' }
+      ];
+      const kpiHtml = `<table>${kpiRows.map(k=>`<tr><th style="text-align:left;width:1%;white-space:nowrap;color:#555;font-weight:600;padding-right:14px;vertical-align:top">${esc(k.label)}</th><td>${esc(k.value)}</td></tr>`).join('')}</table>`;
+
+      // План / Факт / Δ по продуктам + итог
+      const stL = pct => pct>=95?'в плане':pct>=80?'риск':'провал';
+      const pfRows = c.products.map(p=>{
+        const d = p.fact - p.plan;
+        const pct = p.plan>0 ? capPct(Math.round(p.fact/p.plan*100)) : (p.fact>0?100:0);
+        return `<tr>
+          <td>${esc(p.name)}</td>
+          <td style="text-align:right;white-space:nowrap">${esc(String(p.cnt))}</td>
+          <td style="text-align:right;white-space:nowrap">${esc(p.plan>0?fmt(p.plan,'₽'):'—')}</td>
+          <td style="text-align:right;white-space:nowrap">${esc(fmt(p.fact,'₽'))}</td>
+          <td style="text-align:right;white-space:nowrap">${d>=0?'+':'−'}${esc(fmt(Math.abs(d),'₽'))}</td>
+          <td style="text-align:right;white-space:nowrap">${pct}%</td>
+          <td>${esc(stL(pct))}</td>
+        </tr>`;
+      });
+      const totPlan = c.products.reduce((s,p)=>s+p.plan,0);
+      const totFact = c.products.reduce((s,p)=>s+p.fact,0);
+      const totD = totFact-totPlan;
+      const totPct = totPlan>0 ? capPct(Math.round(totFact/totPlan*100)) : (totFact>0?100:0);
+      pfRows.push(`<tr style="font-weight:700;background:#f3f5f8">
+        <td>ИТОГО</td>
+        <td style="text-align:right;white-space:nowrap">${esc(String(c.dealsWon))}</td>
+        <td style="text-align:right;white-space:nowrap">${esc(fmt(totPlan,'₽'))}</td>
+        <td style="text-align:right;white-space:nowrap">${esc(fmt(totFact,'₽'))}</td>
+        <td style="text-align:right;white-space:nowrap">${totD>=0?'+':'−'}${esc(fmt(Math.abs(totD),'₽'))}</td>
+        <td style="text-align:right;white-space:nowrap">${totPct}%</td>
+        <td>${esc(stL(totPct))}</td>
+      </tr>`);
+      const pfHtml = `<table><thead><tr>
+          <th>Продукт</th><th style="text-align:right">Сделок</th><th style="text-align:right">План</th>
+          <th style="text-align:right">Факт</th><th style="text-align:right">Δ</th><th style="text-align:right">%</th><th>Статус</th>
+        </tr></thead><tbody>${pfRows.join('')}</tbody></table>`;
+
+      // Разнос по регионам
+      const totSum = c.regions.reduce((s,r)=>s+r.sum,0) || 1;
+      const regHtml = c.regions.length
+        ? `<table><thead><tr>
+             <th>Регион</th><th style="text-align:right">Сделок</th><th style="text-align:right">Выиграно</th>
+             <th style="text-align:right">Выручка</th><th style="text-align:right">Доля</th>
+           </tr></thead><tbody>${c.regions.map(r=>`<tr>
+             <td>${esc(r.name)}</td>
+             <td style="text-align:right;white-space:nowrap">${esc(String(r.cnt))}</td>
+             <td style="text-align:right;white-space:nowrap">${esc(String(r.won))}</td>
+             <td style="text-align:right;white-space:nowrap">${esc(fmt(r.sum,'₽'))}</td>
+             <td style="text-align:right;white-space:nowrap">${Math.round(r.sum/totSum*100)}%</td>
+           </tr>`).join('')}</tbody></table>`
+        : '<p>Нет данных по регионам.</p>';
+
+      // Предохранитель
+      const fuseHtml = c.fuses.length
+        ? `<ul style="margin:0;padding-left:18px;line-height:1.55">${c.fuses.map(f=>
+            `<li style="margin:4px 0"><strong>[${f.risk==='err'?'критично':'риск'}]</strong> ${esc(f.title)} — ${esc(f.detail)}${f.ref?` (${esc(f.ref)})`:''}</li>`).join('')}</ul>`
+        : '<p>Несостыковок не найдено: платежи проставлены, плательщик совпадает с получателем, ран-рейт в норме.</p>';
+
+      const body =
+        `<h2 style="font-size:15px;margin:0 0 6px">Итоги сбора</h2>` + kpiHtml +
+        `<h2 style="font-size:15px;margin:18px 0 6px">План / Факт / Δ по продуктам</h2>` + pfHtml +
+        `<h2 style="font-size:15px;margin:18px 0 6px">Разнос по регионам</h2>` + regHtml +
+        `<h2 style="font-size:15px;margin:18px 0 6px">Предохранитель — несостыковки</h2>` + fuseHtml;
+
+      ui.printDoc({
+        title: 'РНП — автосбор и сверка',
+        subtitle: 'Сверка факта (amoCRM) с планом РНП',
+        meta: [
+          { label:'Период', value: state.rnp.period||'—' },
+          { label:'Источник', value: recon.demo ? 'демо-данные (mock)' : ('amoCRM · '+recon.source) },
+          { label:'Собрано', value: recon.at ? new Date(recon.at).toLocaleString('ru-RU') : '—' }
+        ],
+        bodyHTML: body,
+        footer: 'Сформировано в Сенсор Suite. На демо-данных (mock) цифры показательные, не реальные.'
+      });
     }
 
     /* Перерисовать панель «Автосбор» целиком (шапка под-вкладки несёт бейджи источника
@@ -1138,42 +1230,41 @@ SensorApp.register({
       return L.join('\n');
     }
     function copySummary(){ ui.copy(summaryPlainText(), 'Сводка скопирована в буфер ✓'); }
+    // Печать сводки дашборда «План / Факт / %» через U.printDoc (самодостаточный HTML;
+    // под jsdom window.open застаблен — helper делает guard/try-catch, печать не падает).
     function printSummary(){
       const stLabel = s => s==='ok'?'в плане':s==='warn'?'риск':'провал';
       const rowsHtml = [];
       state.rnp.blocks.forEach(b=>{
-        rowsHtml.push(`<tr class="grp"><td colspan="5">${esc(b.name)}${b.owner?` — ${esc(b.owner)}`:''} · ${blockAvg(b)}%</td></tr>`);
+        rowsHtml.push(`<tr><td colspan="5" style="font-weight:700;background:#f3f5f8">${esc(b.name)}${b.owner?` — ${esc(b.owner)}`:''} · ${blockAvg(b)}%</td></tr>`);
         (b.metrics||[]).forEach(m=>{
           rowsHtml.push(`<tr>
             <td>${esc(m.name)}${m.invert?' ↓':''}</td>
-            <td class="r">${esc(fmt(m.plan,m.unit))}</td>
-            <td class="r">${esc(fmt(m.fact,m.unit))}</td>
-            <td class="r">${scorePct(m)}%</td>
-            <td>${stLabel(statusOf(m))}</td>
+            <td style="text-align:right;white-space:nowrap">${esc(fmt(m.plan,m.unit))}</td>
+            <td style="text-align:right;white-space:nowrap">${esc(fmt(m.fact,m.unit))}</td>
+            <td style="text-align:right;white-space:nowrap">${scorePct(m)}%</td>
+            <td>${esc(stLabel(statusOf(m)))}</td>
           </tr>`);
         });
       });
-      const html =
-        `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>РНП — сводка</title>
-         <style>
-           body{font-family:Arial,sans-serif;color:#161a22;max-width:820px;margin:28px auto;padding:0 24px}
-           h1{font-size:20px;margin:0 0 4px} .meta{color:#475067;font-size:13px;margin-bottom:18px}
-           table{width:100%;border-collapse:collapse;font-size:13px}
-           td{padding:6px 8px;border-bottom:1px solid #e8ebf0} .r{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-           tr.grp td{font-weight:bold;background:#f3f5f8;border-bottom:1px solid #d6dbe3}
-           thead td{color:#8a93a3;font-weight:bold;text-transform:uppercase;font-size:11px}
-           .foot{color:#8a93a3;font-size:12px;margin-top:22px}
-         </style></head><body>
-         <h1>РНП — реестр новых продаж</h1>
-         <div class="meta">Период: ${esc(state.rnp.period||'—')} · источник: ${esc(state.demo?'демо-данные (обезличено)':state.source)}<br>
-           Сформировано: ${esc(new Date().toLocaleString('ru-RU'))}</div>
-         <table><thead><tr><td>Показатель</td><td class="r">План</td><td class="r">Факт</td><td class="r">%</td><td>Статус</td></tr></thead>
-           <tbody>${rowsHtml.join('')}</tbody></table>
-         <div class="foot">«↓» — инверсный показатель (долги/дебиторка): меньше факта — лучше. Данные демонстрационные, не являются офертой.</div>
-         </body></html>`;
-      const w = window.open('', '_blank');
-      if(!w){ ctx.toast('Разрешите всплывающие окна для печати','err'); return; }
-      w.document.write(html); w.document.close(); w.focus(); w.print();
+      const all = allMetrics().filter(m=>!m.invert);
+      const avg = all.length ? Math.round(all.reduce((s,m)=>s+clampPct(scorePct(m)),0)/all.length) : 0;
+      const body =
+        `<table><thead><tr>
+            <th>Показатель</th><th style="text-align:right">План</th><th style="text-align:right">Факт</th>
+            <th style="text-align:right">%</th><th>Статус</th>
+          </tr></thead><tbody>${rowsHtml.join('')}</tbody></table>` +
+        `<p style="margin-top:14px;font-weight:600">Среднее выполнение по прямым показателям: ${avg}%</p>`;
+      ui.printDoc({
+        title: 'РНП — реестр новых продаж',
+        subtitle: 'Сводка план / факт по блокам',
+        meta: [
+          { label:'Период', value: state.rnp.period||'—' },
+          { label:'Источник', value: state.demo?'демо-данные (обезличено)':state.source }
+        ],
+        bodyHTML: body,
+        footer: '«↓» — инверсный показатель (долги/дебиторка): меньше факта — лучше. Данные демонстрационные, не являются офертой.'
+      });
     }
 
     /* ════════════════════════ ФИЛЬТРЫ / ПЕРИОД ════════════════════════ */

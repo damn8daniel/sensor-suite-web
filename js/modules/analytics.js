@@ -397,6 +397,7 @@ SensorApp.register({
           'Чеклист обработки персональных данных (реестр УЦ, CRM, сайт). Отметки сохраняются локально между сессиями.',
           progress +
           `<div class="btn-row" style="margin-top:14px">
+             <button class="btn" id="an-pdn-print" aria-label="Печать чеклиста 152-ФЗ" title="Печать чеклиста с прогрессом">🖨 Печать чеклиста</button>
              <button class="btn ghost sm" id="an-pdn-reset">Сбросить отметки</button>
              <span class="spacer" style="flex:1"></span>
              <span class="muted" style="font-size:12px">персданные физлиц в самих данных не хранятся</span>
@@ -419,12 +420,67 @@ SensorApp.register({
       elPanel.querySelectorAll('#an-pdn-risk [data-risk]').forEach(b=>{
         b.onclick = ()=>{ pdnState.risk = b.dataset.risk; renderPdn(); };
       });
+      // печать чеклиста
+      const prn = elPanel.querySelector('#an-pdn-print');
+      if(prn) prn.onclick = printPdn;
       // сброс всех отметок (с подтверждением)
       const reset = elPanel.querySelector('#an-pdn-reset');
       if(reset) reset.onclick = ()=>{
         U.confirm({ title:'Сбросить чеклист 152-ФЗ', message:'Снять все отметки выполнения?', ok:'Сбросить', danger:true })
           .then(yes=>{ if(yes){ try{ ctx.store.set(PDN_STORE_KEY, {}); }catch(e){} renderPdn(); ctx.toast('Отметки 152-ФЗ сброшены','info'); } });
       };
+    }
+
+    /* Печать чеклиста 152-ФЗ: прогресс + пункты по группам, со статусом (закрыто/
+       открыто), уровнем риска, нормой и действием. Через U.printDoc (самодостаточный
+       HTML; под jsdom-заглушкой window.open печать не падает). */
+    function printPdn(){
+      if(!PDN.length){ ctx.toast('Чеклист 152-ФЗ ещё не загружен','warn'); return; }
+      const done = loadDone();
+      const total = PDN.length;
+      const doneCnt = PDN.filter(p=>done[p.id]).length;
+      const pct = total ? Math.round(doneCnt/total*100) : 0;
+      const riskLabel = r => (RISK[r] && RISK[r].label) || r || '—';
+
+      // группируем пункты по p.group (порядок групп — по первому появлению)
+      const groups = [];
+      const byGroup = {};
+      PDN.forEach(p=>{
+        const g = p.group || 'Прочее';
+        if(!byGroup[g]){ byGroup[g] = []; groups.push(g); }
+        byGroup[g].push(p);
+      });
+
+      const sections = groups.map(g=>{
+        const rows = byGroup[g].map(p=>{
+          const isC = !!done[p.id];
+          const mk = isC ? '✓' : '○';
+          const col = isC ? '#1a7a3c' : '#888';
+          return `<tr>
+            <td style="color:${col};font-weight:700;text-align:center;width:1%">${mk}</td>
+            <td>${esc(p.item)}${p.norm?`<div style="color:#555;font-size:11px;margin-top:2px">📕 ${esc(p.norm)}</div>`:''}${p.action?`<div style="color:#333;font-size:12px;margin-top:2px">→ ${esc(p.action)}</div>`:''}</td>
+            <td style="white-space:nowrap">${esc(riskLabel(p.risk))}</td>
+            <td style="white-space:nowrap">${isC?'закрыто':'открыто'}</td>
+          </tr>`;
+        }).join('');
+        return `<h2 style="font-size:15px;margin:18px 0 6px">${esc(g)}</h2>` +
+          `<table><thead><tr><th style="width:1%"></th><th>Пункт</th><th>Риск</th><th>Статус</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }).join('');
+
+      const body =
+        `<p style="font-weight:700;font-size:15px;margin:0 0 4px">Закрыто ${doneCnt} из ${total} (${pct}%)</p>` +
+        `<div style="height:10px;background:#e8ebf0;border-radius:999px;overflow:hidden;margin-bottom:6px">
+           <div style="height:100%;width:${pct}%;background:${pct>=100?'#1a7a3c':'#2d6fd6'}"></div>
+         </div>` +
+        sections;
+
+      U.printDoc({
+        title: 'Чеклист 152-ФЗ — соответствие',
+        subtitle: 'Обработка персональных данных: прогресс и пункты по группам',
+        meta: [{ label:'Прогресс', value: `закрыто ${doneCnt} из ${total} (${pct}%)` }],
+        bodyHTML: body,
+        footer: 'Сформировано в Сенсор Suite. Чеклист носит вспомогательный характер; персданные физлиц в самих данных не хранятся.'
+      });
     }
 
     /* ---------- утилиты ---------- */

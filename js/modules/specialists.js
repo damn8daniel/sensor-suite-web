@@ -118,6 +118,8 @@ SensorApp.register({
     };
     let scans = [];      // {name, url} — превью бумажных сканов
     let resultHTML = '';
+    let lastResult = null;   // последний рассчитанный вердикт {pass,warn,lines,next,note}
+    let lastHead = '';       // заголовок вердикта (ПОДХОДИТ / НЕ ПОДХОДИТ / …)
 
     function persist(){
       try { ctx.store.set(DKEY, Object.assign({}, state)); } catch(e){}
@@ -161,7 +163,7 @@ SensorApp.register({
             p.classList.toggle('active', on);
             p.setAttribute('aria-selected', on?'true':'false');
           });
-          resultHTML = ''; elOut.innerHTML = '';
+          resultHTML = ''; lastResult = null; lastHead = ''; elOut.innerHTML = '';
           renderForm();
           renderRules();
         };
@@ -346,7 +348,7 @@ SensorApp.register({
       state.edu='fire'; state.retrain='no'; state.retrainH=''; state.years='';
       state.underLic='no'; state.views=''; state.headcount=''; state.source='etk'; state.nokPassed='no';
       scans.forEach(s=>{ if(s.url){ try{ URL.revokeObjectURL(s.url); }catch(e){} } }); scans=[];
-      resultHTML=''; persist();
+      resultHTML=''; lastResult=null; lastHead=''; persist();
       renderForm(); elOut.innerHTML='';
     }
 
@@ -570,6 +572,8 @@ SensorApp.register({
        ==================================================================== */
     function run(){
       const r = engine();
+      lastResult = r;
+      lastHead = r.pass ? (r.warn ? 'ПОДХОДИТ (с условиями)' : 'ПОДХОДИТ') : 'НЕ ПОДХОДИТ';
       resultHTML = verdictCard(r);
       elOut.innerHTML = resultHTML;
       bindOut();
@@ -606,6 +610,7 @@ SensorApp.register({
         `<div class="sp-report" data-report="${esc(report)}">
            <div style="margin-bottom:12px">${badge}
              <button class="btn ghost sm" data-sp-copy style="margin-left:8px;padding:2px 9px">Скопировать</button>
+             <button class="btn ghost sm" data-sp-print aria-label="Печать вердикта" title="Печать вердикта" style="margin-left:6px;padding:2px 9px">🖨 Печать вердикта</button>
            </div>
            <div style="font-weight:600;margin-bottom:6px;font-size:13px">Разбор по требованиям</div>
            <div style="display:grid;gap:6px">${linesHtml}</div>
@@ -631,6 +636,65 @@ SensorApp.register({
     function bindOut(){
       const cp = elOut.querySelector('[data-sp-copy]');
       if(cp) cp.onclick = ()=>{ const b = elOut.querySelector('.sp-report'); if(b) U.copy(b.dataset.report||'', 'Вердикт скопирован ✓'); };
+      const pr = elOut.querySelector('[data-sp-print]');
+      if(pr) pr.onclick = ()=>printVerdict();
+    }
+
+    /* Печать вердикта: самодостаточный лист — цель проверки, входные данные,
+       вердикт, построчный разбор (✓/▲/✗ + причины) и «что нужно». Через U.printDoc
+       (jsdom-заглушка window.open → no-op, не падает). */
+    function printVerdict(){
+      const r = lastResult;
+      if(!r){ ctx.toast('Сначала рассчитайте вердикт','warn'); return; }
+      const tInfo = TARGETS.find(t=>t.id===state.target);
+      const goal = tInfo ? tInfo.label : state.target;
+
+      // входные данные специалиста (что вводил менеджер) — для бланка
+      const inputs = [];
+      inputs.push({ label:'Цель проверки', value: goal });
+      if(isTechspecs()){
+        if(state.views!=='')     inputs.push({ label:'Заявлено видов работ', value: String(state.views) });
+        if(state.headcount!=='') inputs.push({ label:'Фактически техспециалистов', value: String(state.headcount) });
+        inputs.push({ label:'Образование', value: eduLabel(state.edu) });
+      } else {
+        inputs.push({ label:'Образование', value: eduLabel(state.edu) });
+        inputs.push({ label:'Профпереподготовка', value: state.retrain==='yes' ? ('есть' + (state.retrainH!=='' ? `, ${state.retrainH} ч` : '')) : 'нет' });
+        if(state.years!=='')  inputs.push({ label:'Стаж по профилю', value: state.years + ' лет' });
+        inputs.push({ label:'Опыт под лицензией МЧС / Госпожнадзор', value: state.underLic==='yes' ? 'да' : 'нет' });
+        if(state.target==='nrs') inputs.push({ label:'Пройдена НОК', value: state.nokPassed==='yes' ? 'да' : 'нет' });
+      }
+      inputs.push({ label:'Источник данных', value: state.source==='paper' ? 'бумажная / рукописная (внесено вручную)' : 'ЭТК / электронная трудовая' });
+
+      const verdictColor = r.pass ? (r.warn ? '#b26a00' : '#1a7a3c') : '#b3261e';
+      const verdictMk = r.pass ? (r.warn ? '▲' : '✓') : '✗';
+
+      const linesHtml = r.lines.map(l=>{
+        const mk = l.ok ? '✓' : l.warn ? '▲' : '✗';
+        const col = l.ok ? '#1a7a3c' : l.warn ? '#b26a00' : '#b3261e';
+        return `<tr><td style="color:${col};font-weight:700;vertical-align:top;width:1%;white-space:nowrap;padding-right:10px">${mk}</td>`
+             + `<td style="vertical-align:top">${esc(l.text)}</td></tr>`;
+      }).join('');
+
+      const nextHtml = (r.next && r.next.length)
+        ? `<h2 style="font-size:15px;margin:18px 0 6px">Что нужно</h2>`
+          + `<ul style="margin:0;padding-left:18px;line-height:1.55">${r.next.map(n=>`<li style="margin:3px 0">${esc(n)}</li>`).join('')}</ul>`
+        : '';
+
+      const body =
+        `<div style="font-size:17px;font-weight:700;color:${verdictColor};margin:0 0 16px">${verdictMk} Вердикт: ${esc(lastHead)}</div>` +
+        `<h2 style="font-size:15px;margin:0 0 6px">Цель и входные данные</h2>` +
+        `<table>${inputs.map(i=>`<tr><th style="text-align:left;width:1%;white-space:nowrap;color:#555;font-weight:600;padding-right:14px;vertical-align:top">${esc(i.label)}</th><td>${esc(i.value)}</td></tr>`).join('')}</table>` +
+        `<h2 style="font-size:15px;margin:18px 0 6px">Разбор по требованиям</h2>` +
+        `<table>${linesHtml}</table>` +
+        nextHtml +
+        (r.note ? `<p style="margin-top:18px;color:#555;font-size:12px">${esc(r.note)}</p>` : '');
+
+      U.printDoc({
+        title: 'Проверка специалиста — вердикт',
+        subtitle: goal + ' · разбор по требованиям',
+        bodyHTML: body,
+        footer: 'Сформировано в Сенсор Suite. Детерминированный вывод по правилам квалификации; не является официальным заключением.'
+      });
     }
 
     /* ====================================================================
