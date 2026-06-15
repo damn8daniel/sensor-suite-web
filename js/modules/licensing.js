@@ -134,11 +134,13 @@ SensorApp.register({
 
       U.card('Реквизиты',
         'Заполните вручную или подтяните по ИНН из картотеки контрагентов (DaData). Контрольные суммы ИНН/ОГРН/КПП проверяются на лету.',
-        `<div class="btn-row" style="margin-bottom:14px">
+        `<div class="btn-row" style="margin-bottom:6px">
            <input id="lookup-inn" placeholder="ИНН для пробива" class="mono" inputmode="numeric" autocomplete="off" style="max-width:220px">
            <button class="btn" id="lic-lookup" type="button">🔎 Заполнить из контрагента</button>
            <span id="lookup-note" class="badge" style="display:none"></span>
+           <button class="btn ghost sm" id="lic-demo" type="button" style="margin-left:auto" title="Подставить корректный демо-образец реквизитов">Демо-образец</button>
          </div>
+         <p class="foot" style="margin:0 0 14px">Подсказка: введите ИНН и нажмите Enter, чтобы подтянуть реквизиты, либо заполните поля вручную.</p>
          <div id="req-fields" class="grid cols-2"></div>
          <div id="req-errors" style="margin-top:6px"></div>
          <div class="divider"></div>
@@ -153,12 +155,16 @@ SensorApp.register({
          </div>
          <div id="tpl-tokens" style="margin-top:12px"></div>`) +
 
-      U.card('Генерация и предпросмотр', '',
+      U.card('Готовность пакета',
+        'Сводка по выбранному документу и реквизитам. Обновляется по мере заполнения формы.',
+        `<div id="lic-passport"></div>`) +
+
+      U.card('Генерация и предпросмотр', 'Соберите .docx из шаблона или текстовый документ — либо посмотрите предпросмотр перед выгрузкой.',
         `<div class="btn-row">
            <button class="btn primary" id="lic-gen" type="button">⤓ Сгенерировать</button>
            <button class="btn" id="lic-preview" type="button">👁 Предпросмотр</button>
            <button class="btn" id="lic-copy" type="button">⧉ Копировать текст</button>
-           <button class="btn ghost" id="lic-clear" type="button">Очистить форму</button>
+           <button class="btn ghost" id="lic-clear" type="button" style="margin-left:auto">Очистить форму</button>
          </div>
          <div id="preview-wrap" style="margin-top:14px"></div>`) +
 
@@ -183,6 +189,7 @@ SensorApp.register({
     const completeEl = root.querySelector('#completeness');
     const previewWrap= root.querySelector('#preview-wrap');
     const draftsWrap = root.querySelector('#drafts-wrap');
+    const passportEl = root.querySelector('#lic-passport');
 
     /* ====================================================================
        4. ТИПЫ ДОКУМЕНТОВ: фильтр + селект + мета
@@ -213,7 +220,7 @@ SensorApp.register({
       if (!dt){ docMeta.textContent = 'Выберите тип документа.'; return; }
       docMeta.innerHTML = `Выбран: <strong>${E(dt.name)}</strong> · доступен для ${dt.forms.map(f=>E(f)).join(' и ')}.`;
     }
-    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); });
+    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); renderPassport(); });
     docFilter.addEventListener('input', U.debounce(() => { state.docFilter = docFilter.value; fillTypes(); }, 140));
 
     /* ====================================================================
@@ -381,6 +388,58 @@ SensorApp.register({
              ? 'Не заполнено обязательное: ' + reqMissing.map(E).join(', ') + '.'
              : 'Обязательные поля заполнены. Можно генерировать документ.'
          }</p>`;
+      renderPassport();
+    }
+
+    /* ====================================================================
+       8b. ПАСПОРТ ПАКЕТА — сводная готовность к генерации
+       Лёгкая «приборная панель»: что за документ, форма, статус реквизитов,
+       способ генерации и итоговый вердикт. Помогает увидеть пакет целиком,
+       не пролистывая форму. Использует только существующие классы/токены.
+       ==================================================================== */
+    function renderPassport(){
+      if (!passportEl) return;
+      const v   = collect();
+      const dt  = docTypes.find(d => d.id === state.docType);
+      const c   = { inn: checkInn(v.inn || ''), ogrn: checkOgrn(v.ogrn || ''), kpp: checkKpp(v.kpp || '') };
+      const gen = validForGen();
+
+      // строка-«реквизит» паспорта: подпись + значение + опциональный статус-бейдж
+      const row = (label, value, badge) =>
+        `<div style="display:flex;align-items:baseline;gap:10px;padding:7px 0;border-top:1px solid var(--line)">
+           <span class="foot" style="flex:0 0 132px">${E(label)}</span>
+           <span class="meta" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${value}</span>
+           ${badge || ''}
+         </div>`;
+
+      const dash = '<span class="muted">—</span>';
+      const idBadge = (chk, idleText) =>
+        chk.state === 'ok'  ? `<span class="badge ok dot">${E(chk.msg)}</span>`
+      : chk.state === 'err' ? `<span class="badge err dot">${E(chk.msg)}</span>`
+      :                       `<span class="badge">${E(idleText)}</span>`;
+
+      const tplBadge = state.tpl
+        ? `<span class="badge ok dot">.docx · ${state.tokens.length} полей</span>`
+        : `<span class="badge">текстовый документ</span>`;
+
+      const verdict = gen.ok
+        ? `<span class="badge ok dot">готово к генерации</span>`
+        : `<span class="badge warn dot">${E(gen.msg || 'нужны данные')}</span>`;
+
+      passportEl.innerHTML =
+        `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+           <span class="badge info dot">${E(state.form)}</span>
+           <strong style="font-size:13.5px">${dt ? E(dt.name) : 'Тип документа не выбран'}</strong>
+           <span style="margin-left:auto">${verdict}</span>
+         </div>` +
+        row('Организация', v.name ? `<strong>${E(v.name)}</strong>` : dash) +
+        row('ИНН', v.inn ? `<span class="mono">${E(v.inn)}</span>` : dash, v.inn ? idBadge(c.inn, '') : '') +
+        row(state.form === 'ИП' ? 'ОГРНИП' : 'ОГРН', v.ogrn ? `<span class="mono">${E(v.ogrn)}</span>` : dash, v.ogrn ? idBadge(c.ogrn, '') : '') +
+        (state.form === 'ООО'
+          ? row('КПП', v.kpp ? `<span class="mono">${E(v.kpp)}</span>` : dash, v.kpp ? idBadge(c.kpp, '') : '')
+          : '') +
+        row('Подписант', v.director ? E(v.director) : dash) +
+        row('Способ генерации', '', tplBadge);
     }
 
     /* ====================================================================
@@ -419,6 +478,25 @@ SensorApp.register({
       if (e.key === 'Enter'){ e.preventDefault(); root.querySelector('#lic-lookup').click(); }
     });
 
+    /* быстрый старт: корректный обезличенный образец под текущую форму
+       (контрольные суммы ИНН/ОГРН/КПП проходят валидацию — удобно для демо/обучения) */
+    const DEMO = {
+      'ООО': { name:'ООО «Ромашка»', inn:'7707083893', ogrn:'1027700132195', kpp:'770701001',
+               address:'г. Москва, ул. Примерная, д. 1, оф. 10', director:'Иванов Иван Иванович',
+               post:'Генеральный директор', phone:'+7 (495) 123-45-67',
+               work:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности' },
+      'ИП':  { name:'ИП Петров Пётр Петрович', inn:'500100732259', ogrn:'304500116000157',
+               address:'Московская обл., г. Подольск, ул. Образцовая, д. 5', director:'Петров Пётр Петрович',
+               phone:'+7 (495) 765-43-21',
+               work:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности' }
+    };
+    root.querySelector('#lic-demo').addEventListener('click', () => {
+      const d = DEMO[state.form] || DEMO['ООО'];
+      setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d));
+      runValidation(); updateCompleteness();
+      ctx.toast('Подставлен демо-образец реквизитов', 'info');
+    });
+
     function apply(d){
       // d — плоский объект DaData: {name,inn,ogrn,kpp,address,manager,status}
       const inn = String(d.inn || '');
@@ -452,7 +530,7 @@ SensorApp.register({
           root.querySelector('#tplname').textContent = file.name + ' · ' + state.tokens.length + ' полей';
           root.querySelector('#tplname').className = 'badge ok';
           root.querySelector('#tpl-clear').style.display = '';
-          renderTokenReport();
+          renderTokenReport(); renderPassport();
         } catch (err){ resetTpl(); ctx.toast('Не удалось прочитать шаблон: ' + err.message, 'err'); }
       };
       rd.readAsArrayBuffer(file);
@@ -464,6 +542,7 @@ SensorApp.register({
       root.querySelector('#tpl-clear').style.display = 'none';
       root.querySelector('#tpl-tokens').innerHTML = '';
       const inp = root.querySelector('#tpl'); if (inp) inp.value = '';
+      renderPassport();
     }
     // какие токены шаблона мы умеем заполнять данными формы
     function renderTokenReport(){
@@ -539,6 +618,10 @@ SensorApp.register({
     function previewHTML(text){
       return `<pre class="mono" style="white-space:pre-wrap;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-s);padding:14px;max-height:360px;overflow:auto;font-size:12.5px;line-height:1.6">${E(text)}</pre>`;
     }
+    function previewEmpty(){
+      previewWrap.innerHTML = U.empty('📄',
+        'Предпросмотр появится здесь. Нажмите «Предпросмотр», чтобы собрать документ из текущих реквизитов.');
+    }
 
     /* ====================================================================
        13. КНОПКИ: предпросмотр / копировать / очистить / генерация
@@ -553,7 +636,7 @@ SensorApp.register({
       setVals(Object.fromEntries(FIELDS.map(f => [f.key, ''])));
       root.querySelector('#lookup-inn').value = '';
       root.querySelector('#lookup-note').style.display = 'none';
-      previewWrap.innerHTML = '';
+      previewEmpty();
       runValidation(); updateCompleteness();
       ctx.toast('Форма очищена', 'info');
     });
@@ -689,5 +772,7 @@ SensorApp.register({
     renderFields();
     renderDrafts();
     renderCatalog();
+    renderPassport();
+    previewEmpty();
   }
 });

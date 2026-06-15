@@ -425,9 +425,38 @@ SensorApp.register({
     function badgeEnv(){ return ''; }
 
     function renderEmpty(formWrap){
-      formWrap.innerHTML = U.card('Поля документа', '',
-        U.empty('🗂️', 'Загрузите шаблон или выберите пакет УЦ — поля появятся здесь автоматически.',
-          `<span class="muted" style="font-size:12.5px">Совет: пресеты ниже работают и без файла — удобно посмотреть состав пакета.</span>`));
+      if (!formWrap) return;
+      // обзорная статистика по сид-данным — даёт ощущение наполненности вместо «пустоты»
+      const totalTok = seed.length;
+      const groups = {};
+      seed.forEach(f => { const c = f.category || 'Прочее'; groups[c] = (groups[c]||0) + 1; });
+      const groupChips = Object.keys(groups).slice(0,4)
+        .map(g => `<span class="badge">${U.escape(g)} <span class="t-count">${groups[g]}</span></span>`).join('');
+
+      // карта пакетов как точки входа — клик строит форму (мост к пресетам)
+      const packCards = packages.map(p =>
+        `<button type="button" class="doc-pack" data-empty-pack="${U.escape(p.name)}"
+                 style="cursor:pointer;text-align:left;font:inherit;width:100%"
+                 title="Открыть пакет «${U.escape(p.short)}» в форме">
+           <div class="doc-pack-h"><span class="doc-pack-n">${U.escape(p.num||'•')}</span><b>${U.escape(p.short)}</b></div>
+           <div class="doc-pack-meta">${p.tokens.length} ${plural(p.tokens.length,'поле','поля','полей')} · нажмите, чтобы заполнить</div>
+         </button>`).join('');
+
+      formWrap.innerHTML =
+        `<div class="card">
+           <h3>Поля документа <span class="badge info">${totalTok} ${plural(totalTok,'поле','поля','полей')} в базе</span></h3>
+           <p class="hint">Поля появятся здесь после загрузки <code class="mono">.docx</code>-шаблона или выбора пакета. Система уже знает справочник полей для всех пакетов УЦ — выберите готовый набор ниже, чтобы начать без файла.</p>
+           <div class="doc-empty-stats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${groupChips}</div>
+           <div class="grid cols-2" id="doc-empty-packs">${packCards}</div>
+           <p class="foot" style="margin:14px 0 0">Совет: для экспорта в <code class="mono">.docx</code> нужен файл-шаблон. Без файла доступны заполнение, предпросмотр и печать карты значений.</p>
+         </div>`;
+
+      formWrap.querySelectorAll('[data-empty-pack]').forEach(b => {
+        b.onclick = () => {
+          const pk = packages.find(p => p.name === b.dataset.emptyPack);
+          if (pk) applyPreset(pk, root.querySelector('#doc-presets'));
+        };
+      });
     }
 
     // --- drag & drop ---
@@ -459,11 +488,13 @@ SensorApp.register({
           activePreset = null;
           const totalFields = detected.flat.length + detected.loops.reduce((s,l)=>s+l.tokens.length,0);
           if (tplbar){
+            const repeated = Object.keys(detected.counts || {}).filter(k => detected.counts[k] > 1).length;
             tplbar.hidden = false;
             tplbar.innerHTML =
               `<span class="badge ok dot">${U.escape(file.name)}</span>
                <span class="badge">${totalFields} ${plural(totalFields,'поле','поля','полей')}</span>
                ${detected.loops.length?`<span class="badge info">${detected.loops.length} ${plural(detected.loops.length,'секция','секции','секций')}</span>`:''}
+               ${repeated?`<span class="badge" title="Поля встречаются в шаблоне несколько раз">${repeated} ${plural(repeated,'повтор','повтора','повторов')}</span>`:''}
                <button class="btn ghost sm" id="doc-clear-tpl" type="button" title="Сбросить шаблон">✕ сбросить</button>`;
             tplbar.querySelector('#doc-clear-tpl').onclick = () => resetTpl();
           }
@@ -521,6 +552,21 @@ SensorApp.register({
         groups[g].push(tok);
       });
 
+      // сводка по составу формы: типы полей, авто-склоняемые, секции
+      const autoCount = flat.filter(t => isAuto(t)).length;
+      const dateCount = flat.filter(t => fieldType(t) === 'date').length;
+      const reqCount = flat.filter(t => { const ty = fieldType(t); return ty==='inn'||ty==='ogrn'||ty==='name'; }).length;
+      const summaryChips = [
+        `<span class="badge">${flat.length} ${plural(flat.length,'поле','поля','полей')}</span>`,
+        loops.length ? `<span class="badge info">${loops.length} ${plural(loops.length,'секция','секции','секций')}</span>` : '',
+        autoCount ? `<span class="badge ok dot">${autoCount} авто-склонение</span>` : '',
+        dateCount ? `<span class="badge">${dateCount} ${plural(dateCount,'дата','даты','дат')}</span>` : '',
+        reqCount ? `<span class="badge warn">${reqCount} с проверкой</span>` : ''
+      ].filter(Boolean).join('');
+
+      // строка поиска по полям — появляется при большом числе полей (удобно для пакетов на 50+)
+      const showSearch = flat.length > 8;
+
       let html = '';
       // строка-заголовок формы
       const noTpl = !tpl;
@@ -530,12 +576,17 @@ SensorApp.register({
           ${noTpl?`<span class="badge warn" title="Для .docx загрузите файл-шаблон">без файла-шаблона</span>`:''}
         </h3>
         <p class="hint">${U.escape(label||'')} · ${flat.length+loops.reduce((s,l)=>s+l.tokens.length,0)} ${plural(flat.length,'поле','поля','полей')}. Поля с пометкой <span class="tok">авто</span> склоняются из ФИО автоматически.</p>
+        <div class="doc-summary" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px">${summaryChips}</div>
+        ${showSearch?`<div class="field" style="margin:0 0 12px;position:relative">
+          <input id="doc-search" type="search" placeholder="Поиск по полям — название или {ТОКЕН}…" autocomplete="off" aria-label="Поиск по полям" style="padding-left:32px">
+          <span aria-hidden="true" style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px;pointer-events:none">⌕</span>
+        </div>`:''}
         <div class="doc-progress"><div class="bar"><span id="doc-bar" style="width:0%"></span></div><span class="doc-progress-lbl" id="doc-bar-lbl">0 из 0</span></div>
       </div>`;
 
       // секции групп
       gorder.forEach(g => {
-        html += `<div class="card"><h3>${U.escape(g)}</h3>`;
+        html += `<div class="card" data-doc-group="${U.escape(g)}"><h3>${U.escape(g)} <span class="badge" data-group-count>${groups[g].length}</span></h3>`;
         groups[g].forEach(tok => { html += fieldRow(tok, values[tok], counts[tok]); });
         html += `</div>`;
       });
@@ -577,7 +628,45 @@ SensorApp.register({
       bindFormEvents(formWrap, loops);
       // автозаполнение склоняемых при изменении ФИО
       wireDeclension(formWrap, flat);
+      wireFieldSearch(formWrap);
       updateProgress(formWrap);
+    }
+
+    /* --- живой поиск/фильтр по полям формы (название, токен, источник) --- */
+    function wireFieldSearch(formWrap){
+      const search = formWrap.querySelector('#doc-search');
+      if (!search) return;
+      const fields = [...formWrap.querySelectorAll('.doc-field')];
+      // кэшируем искомый текст каждого поля (подпись + токен + источник)
+      fields.forEach(f => { f.dataset.search = (f.textContent || '').toLowerCase().replace(/\s+/g,' ').trim(); });
+      const apply = () => {
+        const q = search.value.trim().toLowerCase();
+        let shown = 0;
+        fields.forEach(f => {
+          const hit = !q || f.dataset.search.indexOf(q) >= 0;
+          f.hidden = !hit;
+          if (hit) shown++;
+        });
+        // скрываем секции, в которых не осталось видимых полей
+        formWrap.querySelectorAll('[data-doc-group]').forEach(card => {
+          const any = [...card.querySelectorAll('.doc-field')].some(f => !f.hidden);
+          card.hidden = q && !any;
+        });
+        // плашка «ничего не найдено»
+        let none = formWrap.querySelector('#doc-search-none');
+        if (q && shown === 0){
+          if (!none){
+            none = document.createElement('div');
+            none.id = 'doc-search-none'; none.className = 'card';
+            none.innerHTML = U.empty('🔍','По запросу ничего не найдено. Очистите поиск, чтобы увидеть все поля.');
+            const head = formWrap.querySelector('.doc-form-head');
+            if (head && head.nextSibling) formWrap.insertBefore(none, head.nextSibling); else formWrap.appendChild(none);
+          }
+          none.hidden = false;
+        } else if (none){ none.hidden = true; }
+      };
+      search.addEventListener('input', U.debounce(apply, 120));
+      search.addEventListener('search', apply);
     }
 
     // одна строка поля

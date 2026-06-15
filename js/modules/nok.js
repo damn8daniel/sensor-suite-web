@@ -80,8 +80,32 @@ SensorApp.register({
       .nok-pos-row .np-qty,.nok-pos-row .np-price{text-align:right}
       .nok-pos-row .np-sum{text-align:right;font-size:12.5px;color:var(--ink-2);
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+      .nok-pos-row .np-sum.is-empty{color:var(--muted)}
       .nok-pos-row .np-del{padding:0;width:34px;height:34px;line-height:1}
-      .nok-result-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+      /* строка-итог под позициями: «всего N позиций · сумма» */
+      .nok-pos-foot{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+        margin-top:12px;padding-top:11px;border-top:1px dashed var(--line-2);
+        font-size:12.5px;color:var(--muted)}
+      .nok-pos-foot .nok-pos-foot-sum{font-weight:700;color:var(--ink-2);
+        font-variant-numeric:tabular-nums;white-space:nowrap}
+      .nok-result-meta{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+      /* hero-итог: крупная сумма + дельта к прошлому сохранённому */
+      .nok-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;
+        margin:2px 0 16px;padding:15px 17px;border-radius:var(--radius-s);
+        background:linear-gradient(180deg,var(--panel-3),var(--panel-2));
+        border:1px solid var(--line)}
+      .nok-hero-lbl{font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+      .nok-hero-val{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.05;margin-top:3px;
+        color:var(--ink);font-variant-numeric:tabular-nums}
+      .nok-hero-note{font-size:11.5px;color:var(--ink-3);margin-top:4px}
+      .nok-hero-side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right}
+      .nok-delta{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:650;
+        padding:3px 10px;border-radius:var(--radius-pill);font-variant-numeric:tabular-nums;
+        background:var(--panel-2);border:1px solid var(--line-2);color:var(--ink-3)}
+      .nok-delta.up{background:var(--err-soft);color:var(--err-d);border-color:transparent}
+      .nok-delta.down{background:var(--ok-soft);color:var(--ok-d);border-color:transparent}
+      .nok-delta.flat{background:var(--info-soft);color:var(--info);border-color:transparent}
+      .nok-delta-cap{font-size:10.5px;color:var(--muted);letter-spacing:.02em}
       .nok-breakdown td{padding:9px 10px}
       .nok-breakdown .nok-qty,.nok-breakdown .nok-price{text-align:right;color:var(--ink-3);width:1%;white-space:nowrap}
       .nok-breakdown tr.nok-line-sub td{font-weight:650;border-top:1px solid var(--line-2)}
@@ -100,9 +124,14 @@ SensorApp.register({
         .nok-pos-row .np-price{grid-area:price}
         .nok-pos-row .np-sum{grid-area:sum;text-align:left}
         .nok-pos-row .np-del{grid-area:del;justify-self:end}
+        .nok-hero{align-items:flex-start}
+        .nok-hero-side{align-items:flex-start;text-align:left}
+        .nok-hero-val{font-size:26px}
       }
       @media print{
         .nok-pos-head,.nok-hist-act,.nok-result-meta .badge{display:none!important}
+        .nok-hero{background:#fff!important;border:1px solid #ccc}
+        .nok-delta,.nok-delta-cap{display:none!important}
       }`;
       const tag = document.createElement('style');
       tag.id = 'nok-style';
@@ -362,8 +391,8 @@ SensorApp.register({
            ${ui.field('Направление', `<select id="f-dir" aria-label="Направление">${dirOptions()}</select>`)}
            ${ui.field('Регион', `<select id="f-reg" aria-label="Регион">${regOptions()}</select>`)}
          </div>
-         <p class="hint" id="dir-hint" style="margin-top:-4px"></p>
-         <div class="btn-row" id="preset-row" style="margin:-2px 0 14px"></div>
+         <p class="hint" id="dir-hint" style="margin:-2px 0 8px"></p>
+         <div class="btn-row" id="preset-row" style="margin:0 0 16px"></div>
          <div class="grid cols-2">
            ${ui.field('Плательщик / клиент', `<input id="f-client" placeholder="ООО «Ромашка» (необязательно)" autocomplete="off" value="${ui.escape(state.client)}">`)}
            ${ui.field('Номер счёта', `<input id="f-num" placeholder="СЧ-2026/001" autocomplete="off" value="${ui.escape(state.number)}">`)}
@@ -375,7 +404,11 @@ SensorApp.register({
            <span>Наименование</span><span>Кол-во</span><span>Цена, ₽</span><span>Сумма</span><span></span>
          </div>
          <div id="positions"></div>
-         <div class="btn-row" style="margin-top:10px">
+         <div class="nok-pos-foot" id="pos-foot" hidden>
+           <span id="pos-foot-cnt"></span>
+           <span class="nok-pos-foot-sum" id="pos-foot-sum"></span>
+         </div>
+         <div class="btn-row" style="margin-top:12px">
            <button class="btn sm" id="add-pos" type="button">＋ Добавить позицию</button>
          </div>`) +
 
@@ -477,18 +510,23 @@ SensorApp.register({
     function renderPositions(){
       const box = $('#positions');
       if (!state.positions.length){
-        box.innerHTML = `<p class="hint" style="margin:0">Позиций нет — добавьте хотя бы одну строку.</p>`;
+        box.innerHTML = ui.empty('🧾',
+          'Позиций ещё нет. Добавьте строку вручную или примените пресет направления — он заполнит типовой набор.',
+          `<button class="btn sm" id="empty-add" type="button">＋ Первая позиция</button>`);
+        const ea = box.querySelector('#empty-add'); if (ea) ea.onclick = ()=>addPosition(true);
+        renderPosFoot();
         return;
       }
       box.innerHTML = state.positions.map((p,i)=>{
         const qty = parseNum(p.qty===''? '1' : p.qty);
         const price = parseNum(p.price);
+        const hasVal = (qty!==null && price!==null) && (String(p.price||'').trim()!=='' || round2(qty*price)>0);
         const sum = (qty!==null && price!==null) ? rub(round2(qty*price)) : '—';
         return `<div class="nok-pos-row" data-pos="${i}">
            <input class="np-name" data-pos-name placeholder="Наименование услуги" value="${ui.escape(p.name)}" aria-label="Наименование позиции ${i+1}">
            <input class="np-qty" data-pos-qty inputmode="decimal" placeholder="1" value="${ui.escape(p.qty)}" aria-label="Количество">
            <input class="np-price" data-pos-price inputmode="decimal" placeholder="0" value="${ui.escape(p.price)}" aria-label="Цена">
-           <span class="np-sum mono" data-pos-sum>${sum}</span>
+           <span class="np-sum mono${hasVal?'':' is-empty'}" data-pos-sum>${sum}</span>
            <button class="btn sm ghost np-del" type="button" data-pos-del title="Удалить позицию" aria-label="Удалить позицию ${i+1}">✕</button>
          </div>`;
       }).join('');
@@ -502,9 +540,12 @@ SensorApp.register({
           const q = parseNum(qtyEl.value===''?'1':qtyEl.value);
           const pr = parseNum(priceEl.value);
           const bad = (q===null) || (pr===null);
-          sumEl.textContent = bad ? '—' : rub(round2(q*pr));
+          const val = bad ? 0 : round2(q*pr);
+          sumEl.textContent = bad ? '—' : rub(val);
+          sumEl.classList.toggle('is-empty', bad || (priceEl.value.trim()==='' && val===0));
           qtyEl.setAttribute('aria-invalid', q===null && qtyEl.value.trim()!=='' ? 'true':'false');
           priceEl.setAttribute('aria-invalid', pr===null && priceEl.value.trim()!=='' ? 'true':'false');
+          renderPosFoot();
         }
         nameEl.oninput  = e=>{ state.positions[i].name = e.target.value; renderResult(); persistDraft(); };
         qtyEl.oninput   = e=>{ state.positions[i].qty = e.target.value; refreshSum(); renderResult(); persistDraft(); };
@@ -517,6 +558,27 @@ SensorApp.register({
         // Enter в цене последней строки → новая позиция (быстрый ввод)
         priceEl.onkeydown = e=>{ if(e.key==='Enter' && i===state.positions.length-1){ e.preventDefault(); addPosition(true); } };
       });
+      renderPosFoot();
+    }
+    /* Живой итог по позициям под таблицей — мгновенная обратная связь,
+     * не дожидаясь блока «Расчёт счёта». Считает только корректные строки. */
+    function renderPosFoot(){
+      const foot = $('#pos-foot'); if (!foot) return;
+      let sum = 0, n = 0;
+      (state.positions||[]).forEach(p=>{
+        const hasName  = String(p.name||'').trim()  !== '';
+        const hasPrice = String(p.price||'').trim() !== '';
+        if (!hasName && !hasPrice) return;
+        const q = parseNum(p.qty===''||p.qty==null?'1':p.qty);
+        const pr = parseNum(p.price);
+        if (q===null || pr===null) return;
+        const v = round2(q*pr);
+        if (v>0 || hasName){ sum += v; n++; }
+      });
+      if (n<=1){ foot.hidden = true; return; }   // строку показываем только когда есть что суммировать
+      foot.hidden = false;
+      $('#pos-foot-cnt').textContent = n + ' ' + plural(n,'позиция','позиции','позиций');
+      $('#pos-foot-sum').textContent = 'Сумма позиций · ' + rub(round2(sum));
     }
     function addPosition(focus){
       state.positions.push({ name:'', qty:'1', price:'' });
@@ -524,6 +586,46 @@ SensorApp.register({
       if (focus){ const rows = $('#positions').querySelectorAll('[data-pos-name]'); const last = rows[rows.length-1]; if(last) last.focus(); }
     }
     $('#add-pos').onclick = ()=>addPosition(true);
+
+    /* Hero-итог: крупная сумма к оплате + сравнение с прошлым сохранённым счётом.
+     * Делает главное число «героем» экрана и даёт менеджеру быстрый ориентир,
+     * вырос или упал чек относительно последнего расчёта в истории. */
+    function heroHtml(r){
+      // пояснительная строка под суммой: из чего складывается
+      const parts = [];
+      if (r.fee>0) parts.push('вознагр. '+rub(r.fee));
+      if (r.discount>0) parts.push('скидка −'+rub(r.discount));
+      if (r.vatMode==='top') parts.push('НДС +'+rub(r.vat));
+      else if (r.vatMode==='incl') parts.push('в т.ч. НДС '+rub(r.vat));
+      if (r.gov>0) parts.push('пошлина '+rub(r.gov));
+      const note = parts.length
+        ? 'Позиции '+rub(r.itemsSum)+' · '+parts.join(' · ')
+        : 'Чистая сумма позиций, без вознаграждения, скидки и налогов.';
+
+      // дельта к последнему сохранённому счёту (если он есть и это не он же)
+      let side = '';
+      const prev = loadHistory()[0];
+      if (prev && Number(prev.total) > 0){
+        const d = round2(r.total - Number(prev.total));
+        const cls = Math.abs(d) < 0.005 ? 'flat' : (d>0 ? 'up' : 'down');
+        const sign = d>0 ? '+' : (d<0 ? '−' : '±');
+        const arrow = cls==='flat' ? '＝' : (d>0 ? '▲' : '▼');
+        side =
+          `<div class="nok-hero-side">
+             <span class="nok-delta ${cls}" title="Разница с последним сохранённым счётом">${arrow} ${sign}${rub(Math.abs(d))}</span>
+             <span class="nok-delta-cap">к счёту ${ui.escape(prev.number||'—')} · ${rub(Number(prev.total))}</span>
+           </div>`;
+      }
+
+      return `<div class="nok-hero">
+          <div>
+            <div class="nok-hero-lbl">Итого к оплате</div>
+            <div class="nok-hero-val">${rub(r.total)}</div>
+            <div class="nok-hero-note">${ui.escape(note)}</div>
+          </div>
+          ${side}
+        </div>`;
+    }
 
     /* ── результат (разбивка + кнопки) ── */
     function renderResult(){
@@ -569,6 +671,7 @@ SensorApp.register({
             ${ui.badge(vatNote, r.vatMode==='none'?'':'accent')}
             ${r.gov>0 ? ui.badge('госпошлина '+rub(r.gov)) : ''}
          </div>
+         ${heroHtml(r)}
          <div class="tbl-scroll" style="margin-top:2px">
            <table class="tbl nok-breakdown"><tbody>${rowsHtml}
              <tr class="nok-total">
@@ -622,6 +725,7 @@ SensorApp.register({
       list.unshift(snap);
       persistHistory(list.slice(0, 100));          // мягкий лимит
       renderHistory();
+      renderResult();   // обновить дельту-сравнение: теперь baseline — этот счёт
       ctx.toast('Счёт сохранён в историю ✓','ok');
     }
 

@@ -24,6 +24,19 @@ SensorApp.register({
   mount(root, ctx){
     const ui = ctx.ui, esc = ui.escape;
 
+    /* Доп. стили модуля — только ДОБАВЛЕНИЕ правил на существующих токенах
+       (hover/focus новых интерактивных плиток и чипов). Вставляется один раз,
+       не трогает css/app.css и не переименовывает классы. */
+    ensureStyle('rnp-mgmt-style', `
+      .rnp-kpi-link{transition:border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease),transform var(--t-fast) var(--ease)}
+      .rnp-kpi-link:hover{border-color:var(--line-3);box-shadow:var(--shadow-s);transform:translateY(-1px)}
+      .rnp-kpi-link:focus-visible{outline:none;box-shadow:var(--ring)}
+      .rnp-kpi-link:active{transform:translateY(0)}
+      .rnp-att-chip:hover{background:var(--panel-2)!important;border-color:var(--line-3)!important;color:var(--ink)!important}
+      .rnp-att-chip:focus-visible{outline:none;box-shadow:var(--ring)}
+      .rnp-att-chip:active{transform:translateY(.5px)}
+    `);
+
     /* ── Демо-данные РНП (обезличены: вместо фамилий — роли/блоки) ───────────
        Богаче, чем плоский window.SEED.rnp: есть owner и invert (для долгов).
        Это «глубокий» демонабор; если build-агент положил ctx.data.rnp — он имеет приоритет
@@ -159,6 +172,40 @@ SensorApp.register({
       const tab = TABS.find(t=>t.id===state.view) || TABS[0];
       body.appendChild(tab.build());
       bindFilters(body);
+      if(state.view==='dash') bindDash(body);
+    }
+
+    /* Делегирование кликов по интерактиву дашборда: KPI-плитка «Долги» (jump к блоку)
+       и чипы «Точек внимания» (фокус на блок + подсветка показателя поиском).
+       Через делегирование — переживает любые перерисовки панели без утечки слушателей. */
+    function bindDash(body){
+      const onActivate = el => {
+        const jump = el.closest('[data-kpi-jump]');
+        if(jump){ focusBlock(jump.dataset.kpiJump, ''); return; }
+        const chip = el.closest('.rnp-att-chip');
+        if(chip){ focusBlock(chip.dataset.attBi, chip.dataset.attName || ''); return; }
+      };
+      body.addEventListener('click', e=>onActivate(e.target));
+      body.addEventListener('keydown', e=>{
+        if((e.key==='Enter'||e.key===' ') && e.target.closest('[data-kpi-jump]')){
+          e.preventDefault(); onActivate(e.target);
+        }
+      });
+    }
+
+    /* Перейти к конкретному блоку (по индексу) и при наличии — подсветить показатель
+       поиском. Скроллим к карточке блока после перерисовки. */
+    function focusBlock(idx, metricName){
+      const i = String(idx);
+      if(!state.rnp.blocks[+i]) return;
+      state.filter = i;
+      state.q = metricName ? metricName : '';
+      refreshActivePanel();
+      // прокрутка к карточке блока (если внутри прокручиваемого .content)
+      requestAnimationFrame(()=>{
+        const card = root.querySelector('.rnp-block');
+        if(card && card.scrollIntoView) try{ card.scrollIntoView({behavior:'smooth', block:'nearest'}); }catch(e){ card.scrollIntoView(); }
+      });
     }
 
     /* перерисовать шапку + счётчик таба + активную панель, не сбрасывая вкладку */
@@ -256,11 +303,14 @@ SensorApp.register({
       const tile = (label, valueHtml, opts) => {
         opts = opts || {};
         const bar = opts.pct != null
-          ? `<div class="bar" style="margin-top:10px" role="progressbar" aria-valuenow="${opts.pct}" aria-valuemin="0" aria-valuemax="100">
+          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${opts.pct}" aria-valuemin="0" aria-valuemax="100">
                <span style="width:${clampPct(opts.pct)}%;background:${opts.color||'var(--accent)'}"></span>
              </div>` : '';
-        return `<div class="card rnp-kpi" style="padding:15px 17px">
-            <div class="hint" style="margin:0 0 7px">${esc(label)}</div>
+        // опциональный data-jump делает плитку кликабельной (переход к блоку-фильтру)
+        const jump = opts.jump != null
+          ? ` data-kpi-jump="${esc(String(opts.jump))}" role="button" tabindex="0" title="Показать блок «${esc(opts.jumpLabel||'')}»" style="cursor:pointer"` : '';
+        return `<div class="card rnp-kpi${jump?' rnp-kpi-link':''}" style="padding:15px 17px;display:flex;flex-direction:column"${jump}>
+            <div class="hint" style="margin:0 0 7px;display:flex;align-items:center;gap:6px">${esc(label)}${opts.tag||''}</div>
             <div class="rnp-kpi-val" style="font-size:26px;font-weight:700;line-height:1;color:${opts.color||'var(--ink)'}">${valueHtml}</div>
             ${opts.sub?`<div class="hint" style="margin:7px 0 0">${opts.sub}</div>`:''}
             ${bar}
@@ -272,15 +322,82 @@ SensorApp.register({
         `<span class="badge warn" style="margin-right:4px">${warnN} риск</span>` +
         `<span class="badge err">${errN} провал</span>`;
 
-      return `<div class="grid cols-3 rnp-kpi-grid" style="margin-bottom:16px">
+      // индекс блока с инверсными показателями — чтобы плитка «Долги» вела прямо к нему
+      const debtBlockIdx = state.rnp.blocks.findIndex(b=>(b.metrics||[]).some(m=>m.invert));
+      const debtJump = (debtBad || debts.some(m=>statusOf(m)==='warn')) && debtBlockIdx>=0
+        ? { jump: debtBlockIdx, jumpLabel: state.rnp.blocks[debtBlockIdx].name } : {};
+
+      // 4 плитки в один ряд (repeat(4,1fr)) — убираем «осиротевшую» плитку и пустоту справа.
+      // На узких экранах раскладка естественно переносит плитки (min-width в auto-fit).
+      return `<div class="grid rnp-kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:16px;align-items:stretch">
         ${tile('Среднее выполнение плана', avg+'%', { pct:avg, color:avgCls, sub:`по ${norm.length} прямым показателям` })}
         ${tile('Охват сводки', `${visibleBlocks().length}<span class="hint" style="font-size:14px;font-weight:500"> бл.</span> · ${all.length}<span class="hint" style="font-size:14px;font-weight:500"> пок.</span>`,
                 { sub:'блоков · показателей' })}
         ${tile('Распределение статусов', `${okN}<span class="hint" style="font-size:15px;font-weight:500"> / </span>${warnN}<span class="hint" style="font-size:15px;font-weight:500"> / </span>${errN}`,
                 { sub:distSub })}
         ${tile('Долги и дебиторка', debtBad ? `${debtBad}<span class="hint" style="font-size:15px;font-weight:500"> в зоне риска</span>` : 'в норме',
-                { color:debtCls, sub: debts.length ? `${debts.length} инверсных показателей (меньше — лучше)` : 'инверсных показателей нет' })}
-      </div>` + renderFilters();
+                Object.assign({ color:debtCls,
+                  sub: debts.length ? `${debts.length} инверсных показателей (меньше — лучше)` : 'инверсных показателей нет',
+                  tag: debtBad ? '<span class="badge err" style="font-size:10px;padding:0 6px">!</span>' : '' }, debtJump))}
+      </div>` + renderAttention() + renderFilters();
+    }
+
+    /* «Точки внимания» — горизонтальная лента худших показателей по всей сводке.
+       Сортируем провалы и риски (по «недобору» относительно плана), показываем топ-5
+       чипами; клик по чипу фильтрует дашборд на блок и подсвечивает показатель поиском.
+       Когда всё в плане — короткое позитивное состояние (премиальный акцент). */
+    function renderAttention(){
+      const flagged = [];
+      state.rnp.blocks.forEach((b, bi)=>{
+        (b.metrics||[]).forEach(m=>{
+          const st = statusOf(m);
+          if(st==='ok') return;
+          flagged.push({ block:b.name, bi, m, st, gap:100-clampPct(scorePct(m)) });
+        });
+      });
+      if(!flagged.length){
+        return `<div class="card rnp-attention rnp-attention-ok" style="padding:13px 16px;margin-bottom:16px;display:flex;align-items:center;gap:11px;
+              border-left:3px solid var(--ok);background:linear-gradient(0deg,var(--ok-soft),transparent)">
+            <span style="font-size:20px;line-height:1">✓</span>
+            <div>
+              <div style="font-weight:600;color:var(--ok-d)">Все показатели в плане</div>
+              <div class="hint" style="margin:2px 0 0">Ни одного риска или провала в текущей сводке — отличный период.</div>
+            </div>
+          </div>`;
+      }
+      // провалы вперёд, затем по величине недобора
+      flagged.sort((a,b)=> (a.st===b.st ? b.gap-a.gap : (a.st==='err'?-1:1)));
+      const top = flagged.slice(0,5);
+      const more = flagged.length-top.length;
+      const chips = top.map(f=>{
+        const col = colorFor(f.st);
+        const arrow = f.m.invert ? ' ↓' : '';
+        return `<button type="button" class="rnp-att-chip" data-att-bi="${f.bi}" data-att-name="${esc(f.m.name)}"
+            title="${esc(f.block)} · план ${esc(fmt(f.m.plan,f.m.unit))} / факт ${esc(fmt(f.m.fact,f.m.unit))}"
+            style="display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);background:var(--panel);
+                   border-radius:var(--radius-pill);padding:5px 11px 5px 9px;cursor:pointer;font:inherit;font-size:12.5px;color:var(--ink-2);
+                   max-width:280px;transition:background var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease)">
+            <span aria-hidden="true" style="width:7px;height:7px;border-radius:50%;background:${col};flex:0 0 7px"></span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.m.name)}${arrow}</span>
+            <span class="mono" style="color:${col};font-weight:600;font-size:11.5px">${scorePct(f.m)}%</span>
+          </button>`;
+      }).join('');
+      const errC = flagged.filter(f=>f.st==='err').length;
+      const warnC = flagged.length-errC;
+      return `<div class="card rnp-attention" style="padding:13px 16px;margin-bottom:16px;border-left:3px solid ${errC?'var(--err)':'var(--warn)'}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+            <span style="font-size:15px;line-height:1">⚠</span>
+            <span style="font-weight:600;color:var(--ink)">Точки внимания</span>
+            ${errC?`<span class="badge err">${errC} провал</span>`:''}
+            ${warnC?`<span class="badge warn">${warnC} риск</span>`:''}
+            <span class="spacer" style="flex:1"></span>
+            <span class="hint" style="margin:0">отстают от плана сильнее всего · клик — открыть блок</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            ${chips}
+            ${more>0?`<span class="hint" style="margin:0 0 0 2px">и ещё ${more}</span>`:''}
+          </div>
+        </div>`;
     }
 
     /* строка фильтров: блок + поиск */
@@ -776,6 +893,14 @@ SensorApp.register({
       const n = parseFloat(String(v).replace(/[\s ]/g,'').replace(/,/,'.').replace(/[^0-9.\-]/g,'')); return isNaN(n)?null:n; }
     function clone(o){ return JSON.parse(JSON.stringify(o)); }
     function htmlToEl(html){ const t=document.createElement('template'); t.innerHTML=String(html).trim(); return t.content; }
+    // одноразовая инъекция доп. CSS модуля (идемпотентно по id)
+    function ensureStyle(id, css){
+      try{
+        if(document.getElementById(id)) return;
+        const s = document.createElement('style'); s.id = id; s.textContent = css;
+        (document.head || document.documentElement).appendChild(s);
+      }catch(e){ /* среда без head — не критично */ }
+    }
 
     // нормализация любого формата РНП к {period,currency,note,blocks:[{name,owner,metrics:[{name,plan,fact,unit,invert}]}]}
     function normalize(src){

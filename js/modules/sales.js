@@ -281,11 +281,19 @@ SensorApp.register({
     function cellId(si, ci){ return si+'.'+ci; }
 
     function scriptStats(k){
-      const sc = scripts[k]; if(!sc) return {done:0,total:0,pct:0};
+      const sc = scripts[k]; if(!sc) return {done:0,total:0,pct:0,stagesDone:0,stagesTotal:0,nextSi:-1};
       const prog = loadProg(k);
-      let done=0,total=0;
-      sc.stages.forEach((st,si)=>st.checks.forEach((_,ci)=>{ total++; if(prog[cellId(si,ci)]) done++; }));
-      return { done, total, pct: total? Math.round(done/total*100):0 };
+      let done=0,total=0,stagesDone=0,stagesTotal=0,nextSi=-1;
+      sc.stages.forEach((st,si)=>{
+        const stTotal = st.checks.length;
+        if(!stTotal) return;
+        stagesTotal++;
+        let stDone=0;
+        st.checks.forEach((_,ci)=>{ total++; if(prog[cellId(si,ci)]){ done++; stDone++; } });
+        if(stDone===stTotal) stagesDone++;
+        else if(nextSi<0) nextSi = si; // первый незакрытый этап
+      });
+      return { done, total, pct: total? Math.round(done/total*100):0, stagesDone, stagesTotal, nextSi };
     }
 
     function renderScripts(){
@@ -319,9 +327,11 @@ SensorApp.register({
           `<div class="pill-tabs" style="margin-bottom:14px">${switcher}</div>` +
           progBlock(st) +
           `<div class="btn-row" style="margin:2px 0 14px">
+             <button class="btn sm primary" id="sc-next">${st.nextSi>=0 ? (st.done? '↘ К следующему этапу' : '↘ Начать с этапа 1') : '✓ Все этапы закрыты'}</button>
              <button class="btn sm" id="sc-expand">Развернуть всё</button>
              <button class="btn sm" id="sc-collapse">Свернуть всё</button>
-             <button class="btn sm" id="sc-reset" style="margin-left:auto">Сбросить прогресс</button>
+             <button class="btn ghost sm" id="sc-export" title="Скопировать чек-лист с отметками для отчёта">Экспорт ✓</button>
+             <button class="btn ghost sm" id="sc-reset" style="margin-left:auto;color:var(--err-d)">Сбросить прогресс</button>
            </div>` +
           introHtml +
           `<div class="grid" id="sc-stages" style="gap:10px;margin-top:${introHtml?'10px':'0'}">${stagesHtml}</div>`);
@@ -354,15 +364,43 @@ SensorApp.register({
         ctx.toast('Прогресс сброшен','info');
       };
 
+      // перейти к первому незакрытому этапу: развернуть, прокрутить, подсветить
+      body.querySelector('#sc-next').onclick = ()=>{
+        const s = scriptStats(scriptKey);
+        if(s.nextSi<0){ ctx.toast('Все этапы скрипта закрыты ✓','ok'); return; }
+        focusStage(s.nextSi);
+      };
+
+      // экспорт чек-листа с отметками — для отчёта/CRM
+      body.querySelector('#sc-export').onclick = ()=>{
+        U.copy(exportChecklist(scriptKey), 'Чек-лист скопирован ✓');
+      };
+
       // копирование реплики
       body.querySelectorAll('[data-say]').forEach(b=>b.onclick=()=>U.copy(b.dataset.say, 'Реплика скопирована ✓'));
     }
 
-    function renderStageCard(stage, si){
-      const prog = loadProg(scriptKey);
+    // статус этапа: 'done' все отметки сняты-выполнены, 'active' часть, 'todo' пусто
+    function stageState(prog, stage, si){
       const total = stage.checks.length;
       const done = stage.checks.reduce((a,_,ci)=> a + (prog[cellId(si,ci)]?1:0), 0);
-      const complete = total>0 && done===total;
+      const st = total===0 ? 'todo' : (done===total ? 'done' : (done>0 ? 'active' : 'todo'));
+      return { total, done, state:st };
+    }
+    // цветной маркер слева от заголовка этапа
+    function stageDot(state){
+      const c = state==='done' ? 'var(--ok)' : (state==='active' ? 'var(--accent)' : 'var(--line-3)');
+      const fill = state==='todo' ? 'transparent' : c;
+      const mark = state==='done' ? '✓' : '';
+      return `<span class="stage-dot" aria-hidden="true" style="flex:0 0 auto;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;
+        border:2px solid ${c};background:${fill};color:#fff;font-size:10px;font-weight:800;line-height:1;transition:background var(--t) var(--ease),border-color var(--t) var(--ease)">${mark}</span>`;
+    }
+
+    function renderStageCard(stage, si){
+      const prog = loadProg(scriptKey);
+      const { total, done, state } = stageState(prog, stage, si);
+      const complete = state==='done';
+      const sayCount = stage.say ? 1 : 0;
       const checksHtml = stage.checks.map((c,ci)=>{
         const id = 'cb_'+scriptKey+'_'+si+'_'+ci;
         const on = !!prog[cellId(si,ci)];
@@ -371,12 +409,16 @@ SensorApp.register({
                   <span style="color:var(--ink-2);line-height:1.5${on?';text-decoration:line-through;opacity:.6':''}">${esc(c)}</span>
                 </label>`;
       }).join('');
-      return `<div class="card stage" data-si="${si}" style="padding:0;overflow:hidden">
+      // акцент-полоса слева через box-shadow inset (без новых css-классов)
+      const edge = complete ? 'var(--ok)' : (state==='active' ? 'var(--accent)' : 'transparent');
+      return `<div class="card stage" data-si="${si}" data-state="${state}" style="padding:0;overflow:hidden;box-shadow:inset 3px 0 0 ${edge},var(--shadow-xs);transition:box-shadow var(--t) var(--ease),border-color var(--t) var(--ease)">
                 <div class="stage-head" role="button" tabindex="0" aria-expanded="false"
-                     style="display:flex;align-items:center;gap:10px;padding:12px 15px;cursor:pointer;-webkit-user-select:none;user-select:none">
-                  <span class="badge${complete?' ok':''}" style="flex:0 0 auto">${complete?'✓':''} ${total?done+'/'+total:'—'}</span>
+                     title="${total?('Отметок: '+done+' из '+total):'Без чек-листа'}${sayCount?' · есть реплика':''}"
+                     style="display:flex;align-items:center;gap:11px;padding:12px 15px;cursor:pointer;-webkit-user-select:none;user-select:none">
+                  ${stageDot(state)}
                   <strong style="flex:1;font-size:13.5px;line-height:1.35">${esc(stage.name)}</strong>
-                  <span class="stage-caret muted" aria-hidden="true" style="transition:transform var(--t) var(--ease);flex:0 0 auto">▸</span>
+                  <span class="badge${complete?' ok':(state==='active'?' info':'')}" style="flex:0 0 auto;font-variant-numeric:tabular-nums">${total?done+' / '+total:'—'}</span>
+                  <span class="stage-caret muted" aria-hidden="true" style="transition:transform var(--t) var(--ease);flex:0 0 auto;font-size:12px">▸</span>
                 </div>
                 <div class="stage-body" style="display:none;padding:0 15px 13px">
                   ${stage.say ? `<div style="display:flex;gap:8px;align-items:flex-start;background:var(--accent-soft);border-radius:var(--radius-s);padding:9px 11px;margin-bottom:10px">
@@ -389,29 +431,93 @@ SensorApp.register({
               </div>`;
     }
 
+    // развернуть этап si, прокрутить к нему и кратко подсветить
+    function focusStage(si){
+      const card = body.querySelector('.stage[data-si="'+si+'"]');
+      if(!card) return;
+      setStage(card, true);
+      if(card.scrollIntoView) card.scrollIntoView({ block:'center', behavior:'smooth' });
+      card.style.transition = 'box-shadow var(--t) var(--ease)';
+      const prev = card.style.boxShadow;
+      card.style.boxShadow = 'var(--ring-strong),var(--shadow-s)';
+      setTimeout(()=>{ card.style.boxShadow = prev; }, 900);
+    }
+
+    // текстовый экспорт чек-листа с отметками (для CRM/отчёта)
+    function exportChecklist(k){
+      const sc = scripts[k]; if(!sc) return '';
+      const prog = loadProg(k);
+      const s = scriptStats(k);
+      const L = [];
+      L.push('Скрипт: ' + (sc.title||k) + (sc.subtitle?(' — '+sc.subtitle):''));
+      L.push('Прогресс: ' + s.done + ' / ' + s.total + ' отметок · ' + s.pct + '% · этапов закрыто ' + s.stagesDone + ' из ' + s.stagesTotal);
+      L.push('');
+      sc.stages.forEach((stage,si)=>{
+        const stt = stageState(prog, stage, si);
+        const mk = stt.state==='done' ? '[x]' : (stt.state==='active' ? '[~]' : '[ ]');
+        L.push(mk + ' ' + stage.name + (stt.total?(' ('+stt.done+'/'+stt.total+')'):''));
+        stage.checks.forEach((c,ci)=>{
+          L.push('    ' + (prog[cellId(si,ci)]?'✓':'·') + ' ' + c);
+        });
+      });
+      return L.join('\n');
+    }
+
+    function progSubline(st){
+      if(!st.total) return 'В этом скрипте нет чек-листа';
+      if(st.pct===100) return 'Все ' + st.stagesTotal + ' этап' + plural(st.stagesTotal,'','а','ов') + ' закрыты — скрипт пройден полностью';
+      const stagesPart = 'Этапов закрыто: ' + st.stagesDone + ' из ' + st.stagesTotal;
+      const sc = scripts[scriptKey];
+      const nextName = (st.nextSi>=0 && sc && sc.stages[st.nextSi]) ? sc.stages[st.nextSi].name : '';
+      return stagesPart + (nextName ? (' · далее — «' + nextName + '»') : '');
+    }
     function progBlock(st){
-      return `<div id="sc-progress" style="margin-bottom:12px">
-                <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
-                  <span class="muted" style="font-size:12px">Прогресс по скрипту</span>
-                  <strong id="sc-pct" style="font-variant-numeric:tabular-nums">${st.done} / ${st.total} · ${st.pct}%</strong>
+      const accent = st.pct===100 ? 'var(--ok)' : 'var(--accent)';
+      return `<div id="sc-progress" style="margin-bottom:14px">
+                <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:7px">
+                  <span class="muted" style="font-size:12px;line-height:1.4" id="sc-subline">${esc(progSubline(st))}</span>
+                  <strong id="sc-pct" style="font-variant-numeric:tabular-nums;font-size:15px;letter-spacing:-.01em;white-space:nowrap;color:${st.pct===100?'var(--ok-d)':'var(--ink)'}">${st.done} / ${st.total} · ${st.pct}%</strong>
                 </div>
-                <div class="bar"><span id="sc-bar" style="width:${st.pct}%"></span></div>
+                <div class="bar"><span id="sc-bar" style="width:${st.pct}%;background:${accent}"></span></div>
               </div>`;
     }
     function updateProgressUI(){
       const st = scriptStats(scriptKey);
       const pct = body.querySelector('#sc-pct'), bar = body.querySelector('#sc-bar');
-      if(pct) pct.textContent = `${st.done} / ${st.total} · ${st.pct}%`;
-      if(bar) bar.style.width = st.pct+'%';
-      // обновить бейджи на каждой карточке этапа + зачёркивание строк
+      if(pct){ pct.textContent = `${st.done} / ${st.total} · ${st.pct}%`; pct.style.color = st.pct===100?'var(--ok-d)':'var(--ink)'; }
+      if(bar){ bar.style.width = st.pct+'%'; bar.style.background = st.pct===100?'var(--ok)':'var(--accent)'; }
+      const sub = body.querySelector('#sc-subline');
+      if(sub) sub.textContent = progSubline(st);
+      // текст кнопки «к следующему этапу» в зависимости от прогресса
+      const nextBtn = body.querySelector('#sc-next');
+      if(nextBtn){
+        nextBtn.textContent = st.nextSi>=0 ? (st.done? '↘ К следующему этапу' : '↘ Начать с этапа 1') : '✓ Все этапы закрыты';
+        nextBtn.classList.toggle('primary', st.nextSi>=0);
+      }
+      // обновить бейджи/маркеры/edge на каждой карточке этапа + зачёркивание строк
       const prog = loadProg(scriptKey);
       body.querySelectorAll('.stage').forEach(card=>{
         const si = +card.dataset.si; const stage = scripts[scriptKey].stages[si];
-        const total = stage.checks.length;
-        const done = stage.checks.reduce((a,_,ci)=>a+(prog[cellId(si,ci)]?1:0),0);
-        const complete = total>0 && done===total;
+        const { total, done, state } = stageState(prog, stage, si);
+        const complete = state==='done';
+        card.dataset.state = state;
+        // edge-полоса слева
+        const edge = complete ? 'var(--ok)' : (state==='active' ? 'var(--accent)' : 'transparent');
+        card.style.boxShadow = 'inset 3px 0 0 '+edge+',var(--shadow-xs)';
+        // цветной маркер
+        const dot = card.querySelector('.stage-dot');
+        if(dot){
+          const c = complete ? 'var(--ok)' : (state==='active' ? 'var(--accent)' : 'var(--line-3)');
+          dot.style.borderColor = c;
+          dot.style.background = state==='todo' ? 'transparent' : c;
+          dot.textContent = complete ? '✓' : '';
+        }
         const badge = card.querySelector('.badge');
-        if(badge){ badge.classList.toggle('ok', complete); badge.textContent = (complete?'✓ ':' ')+(total?done+'/'+total:'—'); }
+        if(badge){
+          badge.classList.toggle('ok', complete);
+          badge.classList.toggle('info', state==='active');
+          badge.textContent = (total?done+' / '+total:'—');
+        }
         card.querySelectorAll('.sc-check').forEach(lbl=>{
           const cb = lbl.querySelector('input'); const span = lbl.querySelector('span');
           if(span){ span.style.textDecoration = cb.checked?'line-through':''; span.style.opacity = cb.checked?'.6':''; }

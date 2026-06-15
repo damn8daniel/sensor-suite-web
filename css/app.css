@@ -710,3 +710,68 @@ input.doc-auto-filled{
   a[href]::after{content:""}      /* без URL-хвостов */
   @page{margin:16mm}
 }
+
+/* ---------- 20. Кросс-модульная консистентность ----------
+   Единый визуальный язык поверх существующих классов. Только добавление:
+   ничего не переименовываем, чиним рассинхрон между модулями (заголовки секций,
+   пустые состояния, табы, KPI-плитки, паритет тёмной темы). Где модуль задаёт
+   inline-стиль (напр. management) — он остаётся в приоритете, мы лишь заполняем
+   пробелы (hover, скругления, границы в dark). */
+
+/* 20.1 Заголовки секций — одинаковая оптическая «тяжесть» во всех модулях.
+   Иконка/код рядом с h3 не должны менять базовую линию заголовка. */
+.card h3 .badge,.card h3 .t-count{font-weight:600;vertical-align:middle}
+.card > h3:first-child{margin-top:0}
+/* верхний край карточки одинаков: hint после заголовка всегда с одним ритмом */
+.card h3 + .hint{margin-top:2px}
+
+/* 20.2 Пустые состояния — единая типографическая иерархия (Документы,
+   Контрагенты, пустые таблицы через ui.table). Первая строка — читаемый
+   «титул», вложенный .hint/мелкий текст — приглушён. */
+.empty .empty-text{font-size:14px;font-weight:550;color:var(--ink-2);max-width:42ch}
+.empty .empty-text + *{margin-top:4px}
+.empty .hint,.empty small{color:var(--muted);max-width:46ch;font-size:12.5px;margin:0}
+.empty .empty-action{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center}
+.empty .empty-action .btn{margin:0}
+
+/* 20.3 Панель-табы (pill / underline) — одинаковая отбивка снизу и выравнивание
+   счётчиков. У Sales/Management/Documents счётчики теперь читаются единообразно. */
+.pill-tabs,.tabs-underline{align-items:center}
+.pill .t-ic,.tab .t-ic,.pill .t-count,.tab .t-count{flex:0 0 auto}
+/* счётчик, добавленный как .t-count.badge (management «Таблица N») — без двойного фона */
+.t-count.badge{background:var(--panel-2);border-color:var(--line-2);color:var(--muted);min-width:18px;height:18px}
+.pill.active .t-count.badge,.tabs-underline .tab.active .t-count.badge{border-color:transparent}
+
+/* 20.4 KPI-плитки и плитки-показатели (management). Базовая отделка, чтобы
+   совпадали со стилем .card в остальных модулях; inline font-size остаётся. */
+.rnp-kpi,.rnp-metric{border-radius:var(--radius);transition:border-color var(--t) var(--ease),
+  box-shadow var(--t) var(--ease),transform var(--t-fast) var(--ease)}
+.rnp-kpi-link{cursor:pointer}
+.rnp-kpi-link:hover{border-color:var(--line-2);box-shadow:var(--shadow-s);transform:translateY(-1px)}
+.rnp-kpi-link:focus-visible{outline:none;box-shadow:var(--ring)}
+.rnp-metric:hover{border-color:var(--line-2)}
+.rnp-kpi-val{letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+/* в тёмной теме «плоские» (box-shadow:none) плитки нуждаются в видимой границе */
+[data-theme="dark"] .rnp-metric{border-color:var(--line-2)}
+
+/* 20.5 Тулбары действий — одинаковый зазор между группами кнопок во всех
+   модулях (Management «Импорт/Экспорт…», НОК, Документы). */
+.btn-row + .btn-row{margin-top:9px}
+.card .btn-row:last-child{margin-bottom:0}
+
+/* 20.6 Карточки-сегменты (doc-pack / rnp-* / поля) — общий тон поверхности
+   в тёмной теме, чтобы «вложенные» панели не сливались с фоном карточки. */
+[data-theme="dark"] .doc-pack,[data-theme="dark"] .doc-loop-row,
+[data-theme="dark"] .doc-pv-loop{background:var(--panel-3)}
+
+/* 20.7 Бейдж-точка одинакового размера рядом с заголовками (статусы интеграций
+   в Настройках, статус шаблона в Документах). */
+.badge.dot::before{flex:0 0 auto}
+
+/* 20.8 Селекты/инпуты в строке фильтров — одинаковая высота с кнопками рядом
+   (Контрагенты «Сначала новые», Management «Все блоки»). */
+.btn-row select,.btn-row input{height:36px}
+
+/* 20.9 Паритет фокус-кольца для кликабельных пилюль-чипов (Контрагенты строят
+   фильтр как <span class="pill"> — добавляем доступный фокус и курсор). */
+.pill[data-src],.pill[data-pf]{cursor:pointer}

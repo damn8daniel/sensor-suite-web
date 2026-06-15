@@ -16,6 +16,39 @@ SensorApp.register({
     const VERSION = '1.0.0';
     const BUILT   = '2026-06';
 
+    /* журнал проверок соединения: { [intId|'llm']: {ok:bool, detail:str, ts:ISO} }
+       хранится локально, переживает перемонтирование — даёт «здоровье» интеграций
+       с одного взгляда (когда последний раз проверяли и чем закончилось). */
+    function healthAll(){ const h = store.get('settings_health', null); return (h && typeof h === 'object') ? h : {}; }
+    function healthGet(id){ return healthAll()[id] || null; }
+    function healthSet(id, ok, detail){
+      const h = healthAll();
+      h[id] = { ok: !!ok, detail: String(detail || ''), ts: new Date().toISOString() };
+      store.set('settings_health', h);
+    }
+    function healthClear(id){ const h = healthAll(); if (h[id]){ delete h[id]; store.set('settings_health', h); } }
+
+    // «3 мин назад» / «вчера» — компактное относительное время для отметки проверки
+    function ago(iso){
+      const t = Date.parse(iso); if (!isFinite(t)) return '';
+      const s = Math.max(0, (Date.now() - t) / 1000);
+      if (s < 45)    return 'только что';
+      if (s < 90)    return 'минуту назад';
+      if (s < 3600)  return Math.round(s / 60) + ' мин назад';
+      if (s < 5400)  return 'час назад';
+      if (s < 86400) return Math.round(s / 3600) + ' ч назад';
+      if (s < 172800)return 'вчера';
+      return Math.round(s / 86400) + ' дн назад';
+    }
+    // строка-отметка последней проверки под мета-рядом интеграции
+    function healthLineHTML(id){
+      const h = healthGet(id);
+      if (!h) return '';
+      const dot = h.ok ? '<span class="hc-dot hc-ok" aria-hidden="true"></span>' : '<span class="hc-dot hc-err" aria-hidden="true"></span>';
+      const word = h.ok ? 'соединение есть' : 'ошибка';
+      return `<p class="health-line" data-health="${esc(id)}">${dot}<span>Проверено ${esc(ago(h.ts))} · ${esc(word)}</span></p>`;
+    }
+
     /* ─────────────────────────── справочники ─────────────────────────── */
 
     // тип <input> по типу поля интеграции
@@ -97,6 +130,7 @@ SensorApp.register({
            <span class="int-state" data-state="${esc(def.id)}">${st.badge}</span>
            ${docLink}
          </div>` +
+        `<div class="health-slot" data-health-slot="${esc(def.id)}">${healthLineHTML(def.id)}</div>` +
         (fields || ui.empty('🔌', 'У этой интеграции нет настраиваемых полей.')) +
         (def.webCapable === false
           ? `<p class="hint int-cors">Из-за ограничений CORS прямой вызов работает только в desktop-версии. В браузере соответствующие модули используют демо-данные или импорт файла.</p>`
@@ -127,6 +161,7 @@ SensorApp.register({
            <span id="llm-state">${state}</span>
            ${ui.badge('OpenAI-совместимый', 'info')}
          </div>` +
+        `<div class="health-slot" data-health-slot="llm">${healthLineHTML('llm')}</div>` +
         ui.field('Endpoint (базовый URL)',
           `<input id="llm-endpoint" type="url" placeholder="https://api.openai.com/v1" value="${esc(llm.endpoint||'')}" autocomplete="off" spellcheck="false">
            <p class="field-help">Базовый адрес API без /chat/completions. Локальная модель — например http://localhost:11434/v1 (Ollama).</p>`) +
@@ -229,16 +264,27 @@ SensorApp.register({
          </p>`);
     }
 
-    /* ───────────────────────── сводка наверху ───────────────────────── */
+    /* ───────────────────────── сводка наверху ─────────────────────────
+       Кликабельные плитки-статусы: ведут на нужный раздел. Левый акцентный
+       кант + иконка задают иерархию; «всё настроено» / «нет ключей» дают
+       осмысленное пустое состояние вместо голого «0». */
     function summaryHTML(){
       const demo = defs.filter(d => intStatus(d).demo).length;
       const ok   = defs.length - demo;
+      const aiOn = store.hasCreds('llm');
       const items = [
-        { n: ok,          l: 'настроено',   cls: 'ok'   },
-        { n: demo,        l: 'на демо',      cls: 'warn' },
-        { n: store.hasCreds('llm') ? '✓' : '—', l: 'AI-ассистент', cls: store.hasCreds('llm') ? 'ok' : '' }
+        { n: ok,   l: 'настроено',    cls: ok ? 'ok' : '',     ic: '🔗', tab: 'integrations',
+          sub: defs.length ? `из ${defs.length} интеграций` : 'интеграций нет' },
+        { n: demo, l: 'на демо',      cls: demo ? 'warn' : 'ok', ic: demo ? '🧪' : '✓', tab: 'integrations',
+          sub: demo ? 'нужны ключи доступа' : 'все с ключами' },
+        { n: aiOn ? '✓' : '—', l: 'AI-ассистент', cls: aiOn ? 'ok' : '', ic: '✨', tab: 'ai',
+          sub: aiOn ? 'модель подключена' : 'не настроен' }
       ].map(s =>
-        `<div class="sum-item sum-${s.cls}"><div class="sum-n">${esc(s.n)}</div><div class="sum-l">${esc(s.l)}</div></div>`
+        `<button type="button" class="sum-item sum-${s.cls}" data-jump="${s.tab}" title="Открыть раздел">
+           <span class="sum-ic" aria-hidden="true">${s.ic}</span>
+           <span class="sum-body"><span class="sum-n">${esc(s.n)}</span><span class="sum-l">${esc(s.l)}</span>
+           <span class="sum-sub">${esc(s.sub)}</span></span>
+         </button>`
       ).join('');
       return `<div class="settings-summary" id="settings-summary">${items}</div>`;
     }
@@ -247,12 +293,38 @@ SensorApp.register({
        Только токены дизайн-системы, классы не из app.css не конфликтуют. */
     const styleHTML = `<style id="settings-css">
       .settings-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
-      .sum-item{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-        box-shadow:var(--shadow-xs);padding:14px 16px;text-align:left}
-      .sum-n{font-size:24px;font-weight:700;letter-spacing:-.02em;line-height:1.1;font-variant-numeric:tabular-nums}
-      .sum-l{font-size:12px;color:var(--muted);margin-top:2px;font-weight:550}
+      .sum-item{position:relative;display:flex;align-items:center;gap:13px;
+        background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        box-shadow:var(--shadow-xs);padding:14px 16px 14px 18px;text-align:left;
+        font:inherit;color:var(--ink);cursor:pointer;overflow:hidden;
+        transition:border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease),transform var(--t-fast) var(--ease),background var(--t-fast) var(--ease)}
+      .sum-item::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+        background:var(--line-3);border-radius:var(--radius) 0 0 var(--radius);
+        transition:background var(--t-fast) var(--ease)}
+      .sum-ok::before{background:var(--ok)} .sum-warn::before{background:var(--warn)}
+      .sum-item:hover{border-color:var(--line-3);box-shadow:var(--shadow-s);background:var(--panel-2)}
+      .sum-item:active{transform:translateY(.5px)}
+      .sum-item:focus-visible{outline:none;box-shadow:var(--ring)}
+      .sum-ic{flex:0 0 38px;width:38px;height:38px;display:grid;place-items:center;border-radius:10px;
+        font-size:18px;line-height:1;background:var(--panel-2);border:1px solid var(--line)}
+      .sum-ok .sum-ic{background:var(--ok-soft);border-color:transparent}
+      .sum-warn .sum-ic{background:var(--warn-soft);border-color:transparent}
+      .sum-body{display:flex;flex-direction:column;min-width:0}
+      .sum-n{font-size:23px;font-weight:700;letter-spacing:-.02em;line-height:1.05;font-variant-numeric:tabular-nums}
+      .sum-l{font-size:12px;color:var(--ink-2);margin-top:2px;font-weight:600}
+      .sum-sub{font-size:11px;color:var(--muted);margin-top:1px;line-height:1.35;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .sum-ok .sum-n{color:var(--ok-d)} .sum-warn .sum-n{color:var(--warn-d)}
-      @media(max-width:560px){.settings-summary{grid-template-columns:1fr 1fr}}
+      @media(max-width:560px){.settings-summary{grid-template-columns:1fr}.sum-sub{white-space:normal}}
+
+      .int-head-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+      .int-head-row .result{font-size:12.5px;display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap;min-height:22px}
+
+      .health-slot:empty{display:none}
+      .health-line{display:flex;align-items:center;gap:7px;margin:0 0 12px;
+        font-size:11.5px;color:var(--muted);line-height:1.4}
+      .hc-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--muted)}
+      .hc-dot.hc-ok{background:var(--ok)} .hc-dot.hc-err{background:var(--err)}
 
       .int-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px}
       .int-meta .doc-link{margin-left:auto}
@@ -317,11 +389,19 @@ SensorApp.register({
        (определены в shell-CSS). Все панели рендерятся сразу, переключаем
        видимость — не используем ui.tabs (избегаем зависимости от его
        внутренней реализации). Выбор запоминается в store. */
+    // верхняя карточка-«шапка» раздела Интеграции: интро + массовая проверка
+    const withKeys = defs.filter(d => store.hasCreds(d.id)).length;
+    const intHeadHTML = ui.card('Ключи доступа',
+      'Подключение внешних сервисов. Без ключей соответствующие модули работают на демо-данных. Всё хранится только в этом браузере.',
+      `<div class="int-head-row">
+         <button class="btn sm" id="int-test-all"${withKeys ? '' : ' disabled title="Сначала введите ключи хотя бы одной интеграции"'}>
+           ⟳ Проверить все${withKeys ? ` <span class="t-count">${withKeys}</span>` : ''}
+         </button>
+         <span class="result" id="int-test-all-result" role="status" aria-live="polite"></span>
+       </div>`);
     const TABS = [
       { id: 'integrations', label: 'Интеграции',   icon: '🔌', count: defs.length,
-        html: ui.card('Ключи доступа',
-                'Подключение внешних сервисов. Без ключей соответствующие модули работают на демо-данных. Всё хранится только в этом браузере.',
-                '') + intCardsHTML },
+        html: intHeadHTML + intCardsHTML },
       { id: 'ai',         label: 'AI-ассистент',  icon: '✨', html: llmCardHTML() },
       { id: 'appearance', label: 'Оформление',    icon: '🎨', html: themeCardHTML() },
       { id: 'data',       label: 'Данные',        icon: '🗄️', html: dataCardHTML() },
@@ -376,12 +456,24 @@ SensorApp.register({
       const tmp = document.createElement('div');
       tmp.innerHTML = summaryHTML();
       old.replaceWith(tmp.firstElementChild);
+      bindSummary();
+    }
+    function bindSummary(){
+      root.querySelectorAll('#settings-summary [data-jump]').forEach(b => {
+        if (b._bound) return; b._bound = true;
+        b.onclick = () => selectTab(b.dataset.jump);
+      });
     }
     function setState(id){
       const def = defs.find(d => d.id === id);
       const el  = root.querySelector(`[data-state="${CSS.escape(id)}"]`);
       if (def && el) el.innerHTML = intStatus(def).badge;
       refreshSummary();
+    }
+    // перерисовать строку «Проверено … назад» под мета-рядом интеграции
+    function refreshHealthLine(id){
+      const slot = root.querySelector(`[data-health-slot="${CSS.escape(id)}"]`);
+      if (slot) slot.innerHTML = healthLineHTML(id);
     }
     function resultOk(out, detail){
       out.innerHTML = `${ui.badge('✓ соединение есть','ok')} ${detail ? `<span class="hint">${esc(detail)}</span>` : ''}`;
@@ -439,11 +531,47 @@ SensorApp.register({
           catch(e){ res = { ok:false, detail:String(e && e.message || e) }; }
           btn.disabled = false;
           const ms = Math.round(performance.now() - t0);
+          const okRes = !!(res && res.ok);
+          healthSet(id, okRes, okRes ? (res.detail || 'соединение есть') : ((res && res.detail) || 'нет соединения'));
+          refreshHealthLine(id);
           if (!out) return;
-          if (res && res.ok) resultOk(out, (res.detail || '') + ` · ${ms} мс`);
-          else               resultErr(out, (res && res.detail) || 'нет соединения');
+          if (okRes) resultOk(out, (res.detail || '') + ` · ${ms} мс`);
+          else       resultErr(out, (res && res.detail) || 'нет соединения');
         };
       });
+
+      // массовая проверка всех интеграций с ключами — последовательно, с прогрессом
+      const all = root.querySelector('#int-test-all');
+      if (all && !all._bound){ all._bound = true; all.onclick = async () => {
+        const out = root.querySelector('#int-test-all-result');
+        const queue = defs.filter(d => store.hasCreds(d.id));
+        if (!queue.length){ if (out) out.innerHTML = `<span class="hint">Нет интеграций с ключами.</span>`; return; }
+        all.disabled = true;
+        let okN = 0, errN = 0, done = 0;
+        const render = phase => { if (out) out.innerHTML =
+          `${ui.spinner} <span class="hint">${esc(phase)} · ${done}/${queue.length}</span>`; };
+        for (const def of queue){
+          render('проверка ' + (def.title || def.id) + '…');
+          const cardOut = root.querySelector(`[data-result="${CSS.escape(def.id)}"]`);
+          if (cardOut) cardOut.innerHTML = ui.spinner + ' <span class="hint">проверка…</span>';
+          let res;
+          try { res = await ctx.integrations[def.id].test(); }
+          catch(e){ res = { ok:false, detail:String(e && e.message || e) }; }
+          const okRes = !!(res && res.ok);
+          okRes ? okN++ : errN++; done++;
+          healthSet(def.id, okRes, okRes ? (res.detail || 'соединение есть') : ((res && res.detail) || 'нет соединения'));
+          refreshHealthLine(def.id);
+          if (cardOut){ okRes ? resultOk(cardOut, res.detail || '') : resultErr(cardOut, (res && res.detail) || 'нет соединения'); }
+        }
+        all.disabled = false;
+        if (out){
+          const parts = [];
+          if (okN)  parts.push(ui.badge('✓ ' + okN, 'ok'));
+          if (errN) parts.push(ui.badge('✕ ' + errN, 'err'));
+          out.innerHTML = parts.join(' ') + ` <span class="hint">проверено ${queue.length}</span>`;
+        }
+        ctx.toast(errN ? `Проверка: ${okN} ок, ${errN} с ошибкой` : `Все ${okN} интеграции на связи ✓`, errN ? 'info' : 'ok');
+      }; }
 
       root.querySelectorAll('[data-clearint]').forEach(btn => {
         if (btn._bound) return; btn._bound = true;
@@ -459,8 +587,10 @@ SensorApp.register({
           });
           if (!yes) return;
           store.setCreds(id, {});
+          healthClear(id);
           root.querySelectorAll(`[data-int="${CSS.escape(id)}"]`).forEach(inp => { inp.value = ''; });
           setState(id);
+          refreshHealthLine(id);
           const out = root.querySelector(`[data-result="${CSS.escape(id)}"]`);
           if (out) out.innerHTML = '';
           ctx.toast('Ключи удалены', 'ok');
@@ -493,8 +623,10 @@ SensorApp.register({
         const yes = await ui.confirm({ title:'Очистить AI', message:'Удалить настройки AI-ассистента?', danger:true, ok:'Очистить' });
         if (!yes) return;
         store.setCreds('llm', {});
+        healthClear('llm');
         ['#llm-endpoint','#llm-key','#llm-model'].forEach(s => { const e = root.querySelector(s); if (e) e.value = ''; });
         const out = root.querySelector('#llm-result'); if (out) out.innerHTML = '';
+        refreshHealthLine('llm');
         setLlmState();
         ctx.toast('AI-настройки удалены', 'ok');
       }; }
@@ -515,7 +647,7 @@ SensorApp.register({
           if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
           const res = await fetch(base + '/models', { method:'GET', headers });
           const ms = Math.round(performance.now() - t0);
-          if (!res.ok){ if (out) resultErr(out, 'HTTP ' + res.status + ` · ${ms} мс`); }
+          if (!res.ok){ healthSet('llm', false, 'HTTP ' + res.status); if (out) resultErr(out, 'HTTP ' + res.status + ` · ${ms} мс`); }
           else {
             const j = await res.json().catch(()=>null);
             const list = (j && (j.data || j.models)) || [];
@@ -524,11 +656,14 @@ SensorApp.register({
             const detail = (n ? `моделей: ${n}` : 'ответ получен')
               + (cfg.model ? ` · «${cfg.model}» ${hasModel ? 'доступна' : 'не в списке'}` : '')
               + ` · ${ms} мс`;
+            healthSet('llm', true, detail);
             if (out) resultOk(out, detail);
           }
         } catch(e){
+          healthSet('llm', false, String(e && e.message || e));
           if (out) resultErr(out, String(e && e.message || e) + ' (возможна блокировка CORS — проверьте endpoint)');
         }
+        refreshHealthLine('llm');
         test.disabled = false;
       }; }
     }
@@ -606,6 +741,7 @@ SensorApp.register({
         // очищаем по контракту: убираем креды и тему через публичный API
         defs.forEach(d => store.setCreds(d.id, {}));
         store.setCreds('llm', {});
+        store.set('settings_health', {});
         store.set('theme', 'light');
         document.documentElement.setAttribute('data-theme', 'light');
         ctx.toast('Все настройки сброшены', 'ok');
@@ -616,6 +752,7 @@ SensorApp.register({
 
     /* привязать обработчики текущего активного таба (вызывается при onChange) */
     function bindCurrent(){
+      bindSummary();
       bindReveals();
       bindIntegrations();
       bindLlm();

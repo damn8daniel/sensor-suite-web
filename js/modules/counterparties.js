@@ -26,6 +26,7 @@ SensorApp.register({
     const E = U.escape;
     const STORE_KEY = 'counterparties';
     const PREFILL_KEY = 'lic_prefill'; // передаётся в «Лицензирование»
+    const RECENT_KEY = 'cp_recent';    // история недавних пробивов (быстрый повтор)
 
     /* ============================================================
        1. Нормализация ответа интеграций → единая карточка
@@ -110,6 +111,13 @@ SensorApp.register({
       if (!m || m === '—') return '';
       return /(LIQUIDAT|ЛИКВИД|BANKRUPT|БАНКРОТ)/i.test(m) ? 'err' : 'warn';
     }
+    // «проблемный» = не действующий с определившимся статусом, либо высокий риск
+    function isFlagged(card){
+      if (!card) return false;
+      const st = statusType(card);
+      if (st === 'err' || st === 'warn') return true;
+      return riskType(card.risk) === 'err';
+    }
     function riskLabel(v){
       const s = String(v || '').toLowerCase();
       if (!s) return '';
@@ -133,7 +141,21 @@ SensorApp.register({
     function digits(s){ return String(s == null ? '' : s).replace(/\D/g, ''); }
     function hasInn(card){ return card && card.inn && card.inn !== '—' && digits(card.inn).length >= 10; }
 
-    let view = { q: '', src: 'all', sort: 'recent' };
+    let view = { q: '', src: 'all', sort: 'recent', flag: 'all' };
+
+    /* ----- история недавних пробивов (быстрый повтор по ИНН/названию) ----- */
+    function loadRecent(){ const a = ctx.store.get(RECENT_KEY, []); return Array.isArray(a) ? a : []; }
+    function pushRecent(q, source){
+      q = String(q || '').trim();
+      if (!q) return;
+      const key = q.toLowerCase();
+      let a = loadRecent().filter(r => String(r.q || '').toLowerCase() !== key);
+      a.unshift({ q: q, source: source || '', at: new Date().toISOString() });
+      a = a.slice(0, 6);
+      try { ctx.store.set(RECENT_KEY, a); } catch (e){}
+      renderRecent();
+    }
+    function clearRecent(){ try { ctx.store.set(RECENT_KEY, []); } catch (e){} renderRecent(); }
 
     function addToList(card, opts){
       opts = opts || {};
@@ -189,6 +211,8 @@ SensorApp.register({
     function filteredSorted(){
       let list = load();
       if (view.src !== 'all') list = list.filter(c => (c.source || '') === view.src);
+      if (view.flag === 'active') list = list.filter(statusOk);
+      else if (view.flag === 'flagged') list = list.filter(isFlagged);
       const q = view.q.trim().toLowerCase();
       if (q){
         const qd = digits(q);
@@ -306,20 +330,24 @@ SensorApp.register({
     root.innerHTML =
       U.card('Пробив контрагента',
         'Введите ИНН (10 цифр — ООО, 12 — ИП) или название организации. DaData работает из браузера; СПАРК — только в desktop-версии (в web показываются демо-данные).',
-        `<div class="field" style="margin-bottom:10px">
+        `<div class="field" style="margin-bottom:12px">
            <label>ИНН или название организации</label>
-           <input id="cp-q" placeholder="7707083893 или «Газпром»" autocomplete="off" spellcheck="false" inputmode="search">
-           <div id="cp-hint" class="foot" style="margin-top:6px;min-height:16px"></div>
+           <div class="cp-searchbar">
+             <input id="cp-q" placeholder="7707083893 или «Газпром»" autocomplete="off" spellcheck="false" inputmode="search">
+             <button class="btn primary" id="cp-dadata" title="Поиск в DaData (Enter)">🔎 DaData</button>
+             <button class="btn" id="cp-spark" title="Справка из СПАРК">⚡ СПАРК</button>
+           </div>
+           <div class="cp-hintrow">
+             <div id="cp-hint" class="foot cp-hint" aria-live="polite"></div>
+             <span id="cp-status" class="badge" style="display:none"></span>
+           </div>
          </div>
-         <div class="btn-row">
-           <button class="btn primary" id="cp-dadata">🔎 DaData</button>
-           <button class="btn" id="cp-spark">⚡ СПАРК</button>
-           <span id="cp-status" class="badge" style="display:none"></span>
-         </div>`) +
+         <div id="cp-recent" class="cp-recent" hidden></div>`) +
       `<div id="cp-result"></div>` +
       U.card('Картотека',
         'Найденные контрагенты сохраняются здесь (дедуп по ИНН). Поиск, экспорт и переход в лицензирование с автозаполнением реквизитов.',
-        `<div id="cp-toolbar" class="cp-toolbar"></div>
+        `<div id="cp-stats" class="cp-stats"></div>
+         <div id="cp-toolbar" class="cp-toolbar"></div>
          <div id="cp-cards"></div>`);
 
     const elQ      = root.querySelector('#cp-q');
@@ -328,8 +356,28 @@ SensorApp.register({
     const elResult = root.querySelector('#cp-result');
     const elCards  = root.querySelector('#cp-cards');
     const elBar    = root.querySelector('#cp-toolbar');
+    const elStats  = root.querySelector('#cp-stats');
+    const elRecent = root.querySelector('#cp-recent');
     const btnDa    = root.querySelector('#cp-dadata');
     const btnSpark = root.querySelector('#cp-spark');
+
+    /* ----- чипы недавних пробивов ----- */
+    function renderRecent(){
+      const a = loadRecent();
+      if (!a.length){ elRecent.hidden = true; elRecent.innerHTML = ''; return; }
+      elRecent.hidden = false;
+      elRecent.innerHTML =
+        `<span class="cp-recent-lbl">Недавние:</span>` +
+        a.map(r => `<button class="cp-chip" type="button" data-q="${E(r.q)}" title="Повторить пробив${r.source ? ' · ' + E(r.source) : ''}">${E(r.q)}</button>`).join('') +
+        `<button class="cp-chip cp-chip-clear" type="button" data-recent-clear title="Очистить историю">очистить</button>`;
+      elRecent.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+        elQ.value = b.dataset.q;
+        hintInput(); hintInput.flush && hintInput.flush();
+        runDaData();
+      });
+      const clr = elRecent.querySelector('[data-recent-clear]');
+      if (clr) clr.onclick = () => clearRecent();
+    }
 
     // живая подсказка по вводу: тип запроса (ИНН/название) и валидность длины
     const hintInput = U.debounce(() => {
@@ -379,12 +427,23 @@ SensorApp.register({
         ['Руководитель / ИП', E(card.manager)],
         ['Статус', `${U.badge(card.status, statusType(card))}${card.risk ? ' ' + U.badge('риск: ' + card.risk, riskType(card.risk)) : ''}`]
       ];
+      const st = statusType(card);
+      const highRisk = riskType(card.risk) === 'err';
+      let warnHTML = '';
+      if (st === 'err' || st === 'warn' || highRisk){
+        const tone = (st === 'err' || highRisk) ? 'err' : 'warn';
+        const msg = st === 'err' ? 'Организация не действует (' + E(card.status).toLowerCase() + ') — расчёты с ней рискованны.'
+                  : highRisk ? 'СПАРК отмечает высокий риск. Проверьте основания платежа до сделки.'
+                  : 'Статус требует проверки: ' + E(card.status).toLowerCase() + '. Уточните перед расчётами.';
+        warnHTML = `<div class="cp-warn ${tone}">${msg}</div>`;
+      }
       elResult.innerHTML = U.card(E(card.name),
         'Источник: ' + E(card.source),
         `<div class="cp-card-head">
            ${sourceBadge(res)}
            ${res && res.note ? `<span class="foot" style="margin-left:2px">${E(res.note)}</span>` : ''}
          </div>
+         ${warnHTML}
          <table class="tbl"><tbody>` +
           rows.map(r => `<tr><th style="width:170px">${r[0]}</th><td>${r[1]}</td></tr>`).join('') +
         `</tbody></table>
@@ -414,9 +473,33 @@ SensorApp.register({
     /* ============================================================
        5. Картотека: панель управления + таблица
        ============================================================ */
+    /* ----- сводка-KPI: всего / действующих / проблемных (кликабельные фильтры) ----- */
+    function renderStats(){
+      const all = load();
+      if (!all.length){ elStats.innerHTML = ''; elStats.hidden = true; return; }
+      elStats.hidden = false;
+      const active  = all.filter(statusOk).length;
+      const flagged = all.filter(isFlagged).length;
+      const cells = [
+        { flag: 'all',     n: all.length, label: 'всего', tone: '' },
+        { flag: 'active',  n: active,     label: 'действующих', tone: 'ok' },
+        { flag: 'flagged', n: flagged,    label: 'требуют внимания', tone: flagged ? 'warn' : '' }
+      ];
+      elStats.innerHTML = cells.map(c =>
+        `<button type="button" class="cp-stat ${c.tone} ${view.flag === c.flag ? 'active' : ''}" data-flag="${c.flag}"
+                 title="${view.flag === c.flag ? 'Фильтр активен — нажмите, чтобы снять' : 'Показать только эту группу'}">
+           <span class="cp-stat-n">${c.n}</span>
+           <span class="cp-stat-l">${c.label}</span>
+         </button>`).join('');
+      elStats.querySelectorAll('[data-flag]').forEach(b => b.onclick = () => {
+        const f = b.dataset.flag;
+        view.flag = (view.flag === f && f !== 'all') ? 'all' : f;
+        renderStats(); renderCardsBody();
+      });
+    }
+
     function renderToolbar(){
       const all = load();
-      const active = all.filter(statusOk).length;
       const sources = {}; all.forEach(c => { sources[c.source || '—'] = (sources[c.source || '—'] || 0) + 1; });
 
       elBar.innerHTML =
@@ -437,7 +520,6 @@ SensorApp.register({
            </div>
            <span class="spacer" style="flex:1"></span>
            <div class="btn-row">
-             ${all.length ? `<span class="badge" title="Действующих по статусу">${active} активн. из ${all.length}</span>` : ''}
              <button class="btn ghost sm" id="cp-import" title="Импорт картотеки из JSON">⤒ Импорт</button>
              <button class="btn ghost sm" id="cp-export" ${all.length ? '' : 'disabled'} title="Экспорт картотеки">⤓ Экспорт</button>
              <button class="btn ghost sm" id="cp-clear" ${all.length ? '' : 'disabled'} title="Очистить картотеку">✕ Очистить</button>
@@ -479,15 +561,22 @@ SensorApp.register({
     function renderCardsBody(){
       const all = load();
       if (!all.length){
-        elCards.innerHTML = U.empty('🗂️', 'Картотека пуста. Найдите организацию выше и нажмите «＋ В картотеку».');
+        elCards.innerHTML = U.empty('🗂️',
+          'Картотека пуста. Найдите организацию по ИНН или названию — и она появится здесь с дедупликацией по ИНН.',
+          `<button class="btn primary sm" id="cp-empty-cta">🔎 Начать пробив</button>`);
+        const cta = elCards.querySelector('#cp-empty-cta');
+        if (cta) cta.onclick = () => { elQ.focus(); elQ.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
         return;
       }
       const list = filteredSorted();
       if (!list.length){
-        elCards.innerHTML = U.empty('🔍', 'Ничего не найдено по фильтру.',
+        const flagMsg = view.flag === 'active' ? 'Нет действующих по выбранному фильтру.'
+                      : view.flag === 'flagged' ? 'Проблемных контрагентов не найдено — всё чисто.'
+                      : 'Ничего не найдено по фильтру.';
+        elCards.innerHTML = U.empty('🔍', flagMsg,
           `<button class="btn sm" id="cp-reset">Сбросить фильтр</button>`);
         const r = elCards.querySelector('#cp-reset');
-        if (r) r.onclick = () => { view.q = ''; view.src = 'all'; renderToolbar(); renderCardsBody(); };
+        if (r) r.onclick = () => { view.q = ''; view.src = 'all'; view.flag = 'all'; renderStats(); renderToolbar(); renderCardsBody(); };
         return;
       }
 
@@ -511,7 +600,7 @@ SensorApp.register({
 
       elCards.innerHTML =
         U.table(list, cols, { maxHeight: '460px', empty: 'Ничего не найдено по фильтру.' }) +
-        `<div class="foot" style="margin-top:10px">${list.length} ${plural(list.length, 'запись', 'записи', 'записей')}${view.q || view.src !== 'all' ? ' (по фильтру)' : ''} · дедупликация по ИНН</div>`;
+        `<div class="foot" style="margin-top:10px">${list.length} ${plural(list.length, 'запись', 'записи', 'записей')}${view.q || view.src !== 'all' || view.flag !== 'all' ? ' (по фильтру)' : ''} · дедупликация по ИНН</div>`;
 
       const byAt = at => list.find(c => c.savedAt === at);
       elCards.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openCardModal(byAt(b.dataset.open)));
@@ -520,7 +609,7 @@ SensorApp.register({
       elCards.querySelectorAll('[data-del]').forEach(b => b.onclick = () => removeWithConfirm(byAt(b.dataset.del)));
     }
 
-    function renderCards(){ renderToolbar(); renderCardsBody(); }
+    function renderCards(){ renderStats(); renderToolbar(); renderCardsBody(); }
 
     /* ----- модалка просмотра карточки из картотеки ----- */
     function openCardModal(card){
@@ -558,7 +647,9 @@ SensorApp.register({
       setBusy(true, onlyDigits ? 'DaData: поиск по ИНН…' : 'DaData: поиск по названию…');
       try {
         const res = await ctx.integrations.dadata.run(onlyDigits ? 'findById' : 'suggest', { query: q });
-        renderResult(normalize(res && res.data, 'DaData'), res);
+        const card = normalize(res && res.data, 'DaData');
+        renderResult(card, res);
+        if (card && !(res && res.error)) pushRecent(q, 'DaData');
         if (res && res.error) ctx.toast('DaData: ' + res.error, 'err');
       } catch (e){
         renderResult(null, null);
@@ -572,7 +663,9 @@ SensorApp.register({
       setBusy(true, 'СПАРК: запрос справки…');
       try {
         const res = await ctx.integrations.spark.run('company', { inn: q, query: q });
-        renderResult(normalize(res && res.data, 'СПАРК'), res);
+        const card = normalize(res && res.data, 'СПАРК');
+        renderResult(card, res);
+        if (card) pushRecent(q, 'СПАРК');
         if (res && res.error) ctx.toast('СПАРК: ' + res.error, 'err');
       } catch (e){
         renderResult(null, null);
@@ -587,6 +680,7 @@ SensorApp.register({
     /* ============================================================
        7. Старт
        ============================================================ */
+    renderRecent();
     renderCards();
     elQ.focus();
   }
@@ -602,6 +696,13 @@ SensorApp.register({
   .cp-search{flex:1;min-width:220px}
   #cp-sort{max-width:170px;flex:0 0 auto}
   .cp-card-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  /* предупреждение по проблемному статусу/риску в карточке результата */
+  .cp-warn{display:flex;align-items:flex-start;gap:8px;margin:0 0 12px;
+    padding:10px 12px;border-radius:var(--radius-s);font-size:12.5px;line-height:1.45;font-weight:500;
+    border:1px solid transparent}
+  .cp-warn::before{content:"⚠";font-size:13px;line-height:1.35;flex:0 0 auto}
+  .cp-warn.warn{background:var(--warn-soft);color:var(--warn-d);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+  .cp-warn.err{background:var(--err-soft);color:var(--err-d);border-color:color-mix(in srgb,var(--err) 30%,transparent)}
   .cp-org{display:flex;flex-direction:column;gap:2px;min-width:0}
   .cp-org-name{appearance:none;background:none;border:none;padding:0;margin:0;cursor:pointer;
     font:inherit;font-weight:600;color:var(--ink);text-align:left;letter-spacing:-.01em;
@@ -612,10 +713,60 @@ SensorApp.register({
   .cp-row-act{display:inline-flex;gap:4px;justify-content:flex-end;white-space:nowrap}
   .cp-row-act .btn.sm{padding:5px 8px}
   .btn.ghost.sm.cp-del:hover{background:var(--err-soft);color:var(--err-d)}
+
+  /* поисковый блок: поле + кнопки источников единой группой */
+  .cp-searchbar{display:flex;gap:8px;align-items:stretch}
+  .cp-searchbar input{flex:1;min-width:0}
+  .cp-searchbar .btn{flex:0 0 auto}
+  .cp-hintrow{display:flex;align-items:center;gap:8px;margin-top:7px;min-height:18px}
+  .cp-hint{flex:1;min-width:0}
+  .cp-hintrow .badge{flex:0 0 auto}
+
+  /* чипы недавних пробивов */
+  .cp-recent{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px;
+    padding-top:12px;border-top:1px solid var(--line)}
+  .cp-recent-lbl{font-size:11.5px;font-weight:600;color:var(--muted);letter-spacing:.01em;margin-right:1px}
+  .cp-chip{appearance:none;font:inherit;font-size:12px;font-weight:550;line-height:1.3;
+    padding:4px 11px;border-radius:var(--radius-pill);cursor:pointer;
+    border:1px solid var(--line-2);background:var(--panel-2);color:var(--ink-2);
+    font-variant-numeric:tabular-nums;
+    transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease),
+               border-color var(--t-fast) var(--ease),transform var(--t-fast) var(--ease)}
+  .cp-chip:hover{background:var(--accent-soft);color:var(--accent-d);border-color:transparent}
+  .cp-chip:active{transform:translateY(.5px)}
+  .cp-chip:focus-visible{outline:none;box-shadow:var(--ring)}
+  .cp-chip-clear{margin-left:auto;color:var(--muted);background:transparent;border-color:transparent;font-weight:500}
+  .cp-chip-clear:hover{background:var(--panel-2);color:var(--ink-2)}
+
+  /* KPI-сводка картотеки (кликабельные фильтры по статусу) */
+  .cp-stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .cp-stats[hidden]{display:none}
+  .cp-stat{flex:1 1 0;min-width:118px;appearance:none;cursor:pointer;text-align:left;
+    display:flex;flex-direction:column;gap:1px;font:inherit;
+    padding:11px 14px;border-radius:var(--radius-s);
+    border:1px solid var(--line);background:var(--panel-2);color:var(--ink);
+    transition:border-color var(--t-fast) var(--ease),background var(--t-fast) var(--ease),
+               box-shadow var(--t-fast) var(--ease),transform var(--t-fast) var(--ease)}
+  .cp-stat:hover{border-color:var(--line-3);box-shadow:var(--shadow-xs)}
+  .cp-stat:active{transform:translateY(.5px)}
+  .cp-stat:focus-visible{outline:none;box-shadow:var(--ring)}
+  .cp-stat-n{font-size:22px;font-weight:700;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .cp-stat-l{font-size:11.5px;font-weight:550;color:var(--muted);letter-spacing:.01em}
+  .cp-stat.ok .cp-stat-n{color:var(--ok-d)}
+  .cp-stat.warn .cp-stat-n{color:var(--warn-d)}
+  .cp-stat.active{border-color:var(--accent);background:var(--accent-soft);box-shadow:var(--ring)}
+  .cp-stat.active.ok{border-color:var(--ok)}
+  .cp-stat.active.warn{border-color:var(--warn)}
+
   @media(max-width:560px){
     .cp-bar-row{flex-direction:column;align-items:stretch}
     #cp-sort{max-width:none}
     .cp-row-act{flex-wrap:wrap}
+    .cp-searchbar{flex-wrap:wrap}
+    .cp-searchbar input{flex:1 0 100%}
+    .cp-searchbar .btn{flex:1 1 0}
+    .cp-stat{min-width:0;flex:1 1 30%}
+    .cp-stat-n{font-size:19px}
   }`;
   const tag = document.createElement('style');
   tag.id = 'cp-styles';
