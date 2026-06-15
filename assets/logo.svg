@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Сенсор">
+  <title>Сенсор</title>
+  <defs>
+    <!-- Основной красный градиент бренда -->
+    <linearGradient id="sensorBrand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d62f1e"/>
+      <stop offset="1" stop-color="#b21f10"/>
+    </linearGradient>
+    <!-- Лёгкий световой блик сверху для объёма -->
+    <linearGradient id="sensorSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Мягкая тень под плашкой -->
+    <filter id="sensorShadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#7d1409" flood-opacity="0.34"/>
+    </filter>
+    <!-- Тонкая тень у самой буквы для читаемости -->
+    <filter id="glyphShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#5e0f06" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- Скруглённый квадрат (squircle-радиус) с мягкой тенью -->
+  <g filter="url(#sensorShadow)">
+    <rect x="112" y="96" width="800" height="800" rx="190" ry="190" fill="url(#sensorBrand)"/>
+  </g>
+
+  <!-- Внутренний контурный блик: едва заметная рамка -->
+  <rect x="112" y="96" width="800" height="800" rx="190" ry="190"
+        fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="3"/>
+
+  <!-- Верхний световой блик -->
+  <rect x="112" y="96" width="800" height="430" rx="190" ry="190" fill="url(#sensorSheen)"/>
+
+  <!-- Буква «С» — геометричный гротеск, открытая дуга -->
+  <g filter="url(#glyphShadow)">
+    <path fill="#ffffff" d="
+      M 512 232
+      C 358 232 246 350 246 510
+      C 246 670 358 788 512 788
+      C 600 788 676 752 728 690
+      L 651 619
+      C 617 661 569 685 512 685
+      C 421 685 354 610 354 510
+      C 354 410 421 335 512 335
+      C 569 335 617 359 651 401
+      L 728 330
+      C 676 268 600 232 512 232
+      Z"/>
+  </g>
+</svg>

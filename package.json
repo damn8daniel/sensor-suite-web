@@ -1,0 +1,31 @@
+{
+  "name": "sensor-suite",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/modules.mjs && node test/uc.mjs && node test/calls.mjs && node test/rag.mjs && node test/rnp.mjs && node test/specialists.mjs && node test/registry.mjs && node test/licensing.mjs",
+    "test:smoke": "node test/smoke.mjs",
+    "test:modules": "node test/modules.mjs",
+    "test:calls": "node test/calls.mjs",
+    "test:rag": "node test/rag.mjs",
+    "test:rnp": "node test/rnp.mjs",
+    "test:spec": "node test/specialists.mjs",
+    "test:reg": "node test/registry.mjs",
+    "test:uc": "node test/uc.mjs",
+    "test:lic": "node test/licensing.mjs",
+    "build:depts": "node build/build-depts.mjs",
+    "build:demo": "node build/build-demo.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "playwright": "^1.61.0"
+  }
+}

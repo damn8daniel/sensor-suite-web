@@ -1,11 +1,21 @@
-/* Модуль «Лицензирование» — замена легаси-«Спарты» (Documents.exe).
+/* Модуль «Лицензирование» — ПОЛНАЯ ФАБРИКА документов «Спарты» (паритет УЦ-P1).
    Полный мастер подготовки пакета документов на лицензию МЧС (монтаж/ТО/ремонт
    средств ОПБ) и сопутствующих бумаг для ООО и ИП:
-     1) форма организации (ООО/ИП) → 2) тип документа (из window.SEED.sparta) →
-     3) реквизиты с валидацией ИНН/КПП/ОГРН(ИП) по контрольным суммам →
-     4) автозаполнение из контрагента через DaData (с фолбэком на демо) →
-     5) генерация .docx из загруженного шаблона (docxtemplater) или текстовый
-        предпросмотр с экспортом → 6) сохранение/загрузка черновиков.
+     1) форма организации (ООО/ИП) → 2) тип документа: из ВСТРОЕННЫХ шаблонов
+        window.SPARTA_TEMPLATES (с пометкой «реальный шаблон»), а при их отсутствии —
+        из каталога имён window.SEED.sparta (фолбэк) →
+     3) если у типа есть встроенный b64-шаблон и window.SPARTA_FIELDS[form][docId] —
+        ФОРМА ПОЛЕЙ по токенам (label + подсказка source); кнопка «Заполнить из
+        контрагента (DaData)» подтягивает {ORG_*}/{IP_*} реквизиты по ИНН →
+     4) реквизиты с валидацией ИНН/КПП/ОГРН(ИП) по контрольным суммам →
+     5) генерация .docx из ВСТРОЕННОГО шаблона (декод b64 → PizZip → docxtemplater),
+        либо из загруженного пользователем .docx, либо текстовый предпросмотр/экспорт →
+     6) «Сгенерировать ВЕСЬ пакет» — все встроенные документы формы одним .zip →
+     7) сохранение/загрузка черновиков.
+   SPARTA_TEMPLATES = { 'ООО':{docId:{name,b64,tokens?}}, 'ИП':{docId:{...}} }
+   SPARTA_FIELDS    = { 'ООО':{docId:[{token,label,source}]}, 'ИП':{docId:[...]} }
+   Файлы sparta-ooo.js/sparta-ip.js могут быть ещё пустыми — всё читается в рантайме
+   с фолбэком на текущий каталог имён, генерация обёрнута в try/catch.
    Контракт сохранён: id 'licensing', dept 'Лицензирование', order 20.
    Без import/export, только SensorApp.register и ctx.ui-хелперы. */
 SensorApp.register({
@@ -21,7 +31,9 @@ SensorApp.register({
     { id:'lookup', title:'Заполнить из контрагента (DaData)', hint:'Подтянуть реквизиты по ИНН', icon:'🔎',
       run(ctx){ const b=document.getElementById('lic-lookup'); if(b) b.click(); } },
     { id:'draft', title:'Сохранить черновик пакета', hint:'Запомнить реквизиты и тип', icon:'💾',
-      run(ctx){ const b=document.getElementById('lic-save-draft'); if(b) b.click(); } }
+      run(ctx){ const b=document.getElementById('lic-save-draft'); if(b) b.click(); } },
+    { id:'pkg', title:'Сгенерировать ВЕСЬ пакет', hint:'Все встроенные документы формы в .zip', icon:'📦',
+      run(ctx){ const b=document.getElementById('lic-gen-pkg'); if(b) b.click(); } }
   ],
 
   mount(root, ctx){
@@ -50,6 +62,16 @@ SensorApp.register({
 
     const sparta = (ctx.data && ctx.data.sparta) || {};
 
+    /* ВСТРОЕННЫЕ шаблоны Спарты (пишутся параллельными агентами в sparta-ooo.js /
+       sparta-ip.js). Читаются в рантайме; на момент работы могут быть пустыми {}. */
+    const SPARTA_TPL = (typeof window !== 'undefined' && window.SPARTA_TEMPLATES && typeof window.SPARTA_TEMPLATES === 'object') ? window.SPARTA_TEMPLATES : {};
+    const SPARTA_FLD = (typeof window !== 'undefined' && window.SPARTA_FIELDS    && typeof window.SPARTA_FIELDS    === 'object') ? window.SPARTA_FIELDS    : {};
+    // есть ли встроенные шаблоны хоть для одной формы
+    function tplMapFor(form){ const m = SPARTA_TPL[form]; return (m && typeof m === 'object') ? m : null; }
+    function fieldsFor(form, docId){ const m = SPARTA_FLD[form]; const a = m && m[docId]; return Array.isArray(a) ? a : null; }
+    function tplEntry(form, docId){ const m = tplMapFor(form); const e = m && m[docId]; return (e && (e.b64 || e.name)) ? e : null; }
+    const hasBuiltinTemplates = ['ООО','ИП'].some(f => { const m = tplMapFor(f); return m && Object.keys(m).length; });
+
     // привести любое значение к {id,name}
     const slug = s => 'd_' + String(s).toLowerCase()
       .replace(/[«»"'(),.]/g,'').replace(/[^a-zа-я0-9]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,40);
@@ -63,6 +85,22 @@ SensorApp.register({
     }
 
     let docTypes = [];
+    if (hasBuiltinTemplates){
+      /* ИСТОЧНИК — ВСТРОЕННЫЕ ШАБЛОНЫ: один тип на (форма+docId). Один и тот же docId,
+         встречающийся в обеих формах, схлопывается в тип с обеими формами; b64 хранится
+         по форме отдельно (см. tplEntry). builtin:true → пометка «реальный шаблон». */
+      const byId = new Map();
+      ['ООО','ИП'].forEach(form => {
+        const m = tplMapFor(form); if (!m) return;
+        Object.keys(m).forEach(docId => {
+          const e = m[docId] || {};
+          const name = e.name || docId;
+          if (!byId.has(docId)) byId.set(docId, { id: docId, name, forms: new Set(), builtin: true });
+          byId.get(docId).forms.add(form);
+        });
+      });
+      docTypes = [...byId.values()].map(d => ({ id: d.id, name: d.name, forms: [...d.forms], builtin: true }));
+    } else
     if (Array.isArray(sparta.types) && sparta.types.length){
       // сводим одинаковые имена документов из разных групп в один тип с обеими формами
       const byName = new Map();
@@ -95,7 +133,9 @@ SensorApp.register({
       docTypes = list.map((t, i) => { const it = asItem(t, i); return { id: it.id, name: it.name, forms: it.forms || ['ООО','ИП'] }; });
     }
     if (!docTypes.length) docTypes = FALLBACK;
-    const docSource = sparta.source || 'каталог шаблонов СПАРТА (обезличено)';
+    const docSource = hasBuiltinTemplates
+      ? 'встроенные обезличенные шаблоны .docx (реальные бланки «Спарты»)'
+      : (sparta.source || 'каталог шаблонов СПАРТА (обезличено)');
 
     /* ====================================================================
        2. РЕКВИЗИТЫ
@@ -112,7 +152,7 @@ SensorApp.register({
       { key:'work',     label:'Вид работ',                 ph:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности', full:true }
     ];
 
-    let state = { form:'ООО', docType: docTypes[0] && docTypes[0].id, tpl:null, tplName:'', tokens:[], docFilter:'' };
+    let state = { form:'ООО', docType: docTypes[0] && docTypes[0].id, tpl:null, tplName:'', tokens:[], docFilter:'', docValues:{} };
 
     /* ====================================================================
        3. РАЗМЕТКА
@@ -146,7 +186,11 @@ SensorApp.register({
          <div class="divider"></div>
          <div id="completeness"></div>`) +
 
-      U.card('Шаблон документа (необязательно)',
+      U.card('Поля документа',
+        'Поля встроенного шаблона выбранного типа. Реквизиты {ORG_*}/{IP_*} подтягиваются из блока «Реквизиты» (в т.ч. по ИНН через DaData); остальные заполните вручную.',
+        `<div id="doc-fields-wrap"></div>`) +
+
+      U.card('Свой шаблон документа (необязательно)',
         'Загрузите .docx с полями вида {ОРГАНИЗАЦИЯ}, {ИНН}, {АДРЕС} — заполним их данными формы. Без шаблона соберём аккуратный текстовый документ.',
         `<div class="btn-row">
            <label class="btn primary">📎 Загрузить .docx<input id="tpl" type="file" accept=".docx" hidden></label>
@@ -159,13 +203,15 @@ SensorApp.register({
         'Сводка по выбранному документу и реквизитам. Обновляется по мере заполнения формы.',
         `<div id="lic-passport"></div>`) +
 
-      U.card('Генерация и предпросмотр', 'Соберите .docx из шаблона или текстовый документ — либо посмотрите предпросмотр перед выгрузкой.',
+      U.card('Генерация и предпросмотр', 'Соберите .docx из встроенного/загруженного шаблона или текстовый документ — либо посмотрите предпросмотр. «Весь пакет» собирает все встроенные документы выбранной формы в один .zip.',
         `<div class="btn-row">
-           <button class="btn primary" id="lic-gen" type="button">⤓ Сгенерировать</button>
+           <button class="btn primary" id="lic-gen" type="button">⤓ Сгенерировать .docx</button>
+           <button class="btn" id="lic-gen-pkg" type="button" style="display:none">📦 Сгенерировать ВЕСЬ пакет</button>
            <button class="btn" id="lic-preview" type="button">👁 Предпросмотр</button>
            <button class="btn" id="lic-copy" type="button">⧉ Копировать текст</button>
            <button class="btn ghost" id="lic-clear" type="button" style="margin-left:auto">Очистить форму</button>
          </div>
+         <div id="lic-pkg-progress" hidden style="margin-top:10px"></div>
          <div id="preview-wrap" style="margin-top:14px"></div>`) +
 
       U.card('Черновики пакетов',
@@ -190,6 +236,8 @@ SensorApp.register({
     const previewWrap= root.querySelector('#preview-wrap');
     const draftsWrap = root.querySelector('#drafts-wrap');
     const passportEl = root.querySelector('#lic-passport');
+    const docFieldsWrap = root.querySelector('#doc-fields-wrap');
+    const genPkgBtn  = root.querySelector('#lic-gen-pkg');
 
     /* ====================================================================
        4. ТИПЫ ДОКУМЕНТОВ: фильтр + селект + мета
@@ -214,13 +262,16 @@ SensorApp.register({
         ? `${list.length} из ${all.length}`
         : `${all.length} для ${state.form}`;
       updateDocMeta();
+      renderDocFields();
     }
     function updateDocMeta(){
       const dt = docTypes.find(d => d.id === state.docType);
       if (!dt){ docMeta.textContent = 'Выберите тип документа.'; return; }
-      docMeta.innerHTML = `Выбран: <strong>${E(dt.name)}</strong> · доступен для ${dt.forms.map(f=>E(f)).join(' и ')}.`;
+      const real = dt.builtin && tplEntry(state.form, dt.id);
+      docMeta.innerHTML = `Выбран: <strong>${E(dt.name)}</strong> · доступен для ${dt.forms.map(f=>E(f)).join(' и ')}.`
+        + (real ? ` <span class="badge ok dot" title="генерация из встроенного .docx-бланка">реальный шаблон</span>` : '');
     }
-    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); renderPassport(); });
+    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); renderDocFields(); renderPassport(); });
     docFilter.addEventListener('input', U.debounce(() => { state.docFilter = docFilter.value; fillTypes(); }, 140));
 
     /* ====================================================================
@@ -418,8 +469,13 @@ SensorApp.register({
       : chk.state === 'err' ? `<span class="badge err dot">${E(chk.msg)}</span>`
       :                       `<span class="badge">${E(idleText)}</span>`;
 
-      const tplBadge = state.tpl
-        ? `<span class="badge ok dot">.docx · ${state.tokens.length} полей</span>`
+      const dtP = docTypes.find(d => d.id === state.docType);
+      const builtinP = dtP && dtP.builtin ? tplEntry(state.form, dtP.id) : null;
+      const builtinFldsP = builtinP ? (builtinFieldsFor(state.form, dtP.id) || []) : [];
+      const tplBadge = builtinP
+        ? `<span class="badge ok dot">встроенный .docx · ${builtinFldsP.length} полей</span>`
+        : state.tpl
+        ? `<span class="badge ok dot">свой .docx · ${state.tokens.length} полей</span>`
         : `<span class="badge">текстовый документ</span>`;
 
       const verdict = gen.ok
@@ -493,7 +549,7 @@ SensorApp.register({
     root.querySelector('#lic-demo').addEventListener('click', () => {
       const d = DEMO[state.form] || DEMO['ООО'];
       setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d));
-      runValidation(); updateCompleteness();
+      runValidation(); updateCompleteness(); renderDocFields();
       ctx.toast('Подставлен демо-образец реквизитов', 'info');
     });
 
@@ -510,7 +566,7 @@ SensorApp.register({
       const map = { name:d.name, inn:d.inn, ogrn:d.ogrn, kpp:d.kpp, address:d.address, director:d.manager };
       Object.keys(map).forEach(k => { if (map[k] == null) delete map[k]; });
       setVals(map);
-      runValidation(); updateCompleteness();
+      runValidation(); updateCompleteness(); renderDocFields();
     }
 
     /* ====================================================================
@@ -566,6 +622,101 @@ SensorApp.register({
     }
     function norm(t){ return String(t).toUpperCase().replace(/\s+/g, '_').replace(/[ЁË]/g, 'Е'); }
     function dataIndex(data){ const ix = {}; Object.keys(data).forEach(k => ix[norm(k)] = data[k]); return ix; }
+
+    /* ====================================================================
+       10b. ВСТРОЕННЫЕ ШАБЛОНЫ СПАРТЫ: поля документа + значения по токенам
+       Токены реальных бланков — латиницей (ORG_../IP_.. реквизиты + поля
+       конкретного документа). Реквизиты из блока «Реквизиты» проецируются на
+       ORG_../IP_.. токены автоматически; остальные токены заполняются вручную и
+       хранятся в state.docValues[token].
+       ==================================================================== */
+    // карта: какие токены покрываются реквизитами формы (см. блок «Реквизиты»)
+    function reqTokenMap(){
+      const v = collect();
+      const isIP = state.form === 'ИП';
+      const m = {
+        // организация / ИП
+        ORG_FULL_NAME: v.name || '', ORG_SHORT_NAME: v.name || '', ORG_NAME: v.name || '',
+        IP_FULL_NAME: isIP ? (v.name || '') : '', IP_NAME: isIP ? (v.name || '') : '',
+        ORG_INN: v.inn || '', IP_INN: isIP ? (v.inn || '') : '', INN: v.inn || '',
+        ORG_OGRN: !isIP ? (v.ogrn || '') : '', IP_OGRNIP: isIP ? (v.ogrn || '') : '', OGRN: v.ogrn || '', OGRNIP: isIP ? (v.ogrn || '') : '',
+        ORG_KPP: v.kpp || '', KPP: v.kpp || '',
+        ORG_ADDRESS: v.address || '', IP_ADDRESS: isIP ? (v.address || '') : '', ADDRESS: v.address || '',
+        ORG_DIRECTOR: !isIP ? (v.director || '') : '', DIRECTOR: v.director || '',
+        IP_FIO: isIP ? (v.director || v.name || '') : '', DIRECTOR_FIO: v.director || '',
+        ORG_POSITION: !isIP ? (v.post || 'Генеральный директор') : '', POSITION: !isIP ? (v.post || '') : 'Индивидуальный предприниматель',
+        ORG_PHONE: v.phone || '', IP_PHONE: isIP ? (v.phone || '') : '', PHONE: v.phone || '',
+        WORK_TYPE: v.work || '', WORKS: v.work || '',
+        DATE: new Date().toLocaleDateString('ru-RU'), CITY: 'Москва'
+      };
+      const out = {}; Object.keys(m).forEach(k => out[norm(k)] = m[k]); return out;
+    }
+    // есть ли у текущего выбора встроенный шаблон + список полей
+    function builtinFieldsFor(form, docId){
+      if (!tplEntry(form, docId)) return null;
+      const flds = fieldsFor(form, docId);
+      if (flds && flds.length) return flds;
+      // полей нет в SPARTA_FIELDS, но шаблон есть — выведем поля из токенов шаблона
+      const e = tplEntry(form, docId);
+      const toks = Array.isArray(e.tokens) ? e.tokens : [];
+      return toks.map(tk => ({ token: tk, label: tk, source: '' }));
+    }
+    function currentBuiltinFields(){ return builtinFieldsFor(state.form, state.docType); }
+    // итоговые значения по токенам для render(): реквизиты + ручные поля документа
+    function builtinValues(form, docId){
+      const out = reqTokenMap();
+      const flds = builtinFieldsFor(form, docId) || [];
+      flds.forEach(f => {
+        const tk = norm(f.token);
+        const manual = state.docValues[tk];
+        if (manual != null && String(manual).length) out[tk] = manual;     // ручной приоритет, если заполнено
+        else if (!(tk in out)) out[tk] = '';                                // незаполненный токен — пусто
+      });
+      return out;
+    }
+
+    // отрисовать форму полей документа (только для встроенных шаблонов)
+    function renderDocFields(){
+      if (!docFieldsWrap) return;
+      const dt = docTypes.find(d => d.id === state.docType);
+      const flds = (dt && dt.builtin) ? currentBuiltinFields() : null;
+      if (!flds || !flds.length){
+        docFieldsWrap.innerHTML = hasBuiltinTemplates
+          ? U.empty('🧩', 'У выбранного типа нет встроенного шаблона с полями — будет собран текстовый документ или используйте свой .docx ниже.')
+          : U.empty('🧩', 'Встроенные шаблоны «Спарты» ещё не загружены. Документ соберётся текстом, либо загрузите свой .docx ниже.');
+        if (genPkgBtn) genPkgBtn.style.display = 'none';
+        return;
+      }
+      const reqIx = reqTokenMap();
+      docFieldsWrap.innerHTML =
+        `<p class="hint" style="margin-bottom:10px">Полей в документе: <strong>${flds.length}</strong>. Поля с пометкой <span class="tok">из реквизитов</span> подставятся автоматически — их можно переопределить.</p>` +
+        `<div class="grid cols-2">` +
+        flds.map(f => {
+          const tk = norm(f.token);
+          const fromReq = (tk in reqIx) && String(reqIx[tk]).length;
+          const tok = f.source ? ('источник: ' + f.source) : (fromReq ? 'из реквизитов' : 'заполните вручную');
+          const ph = fromReq ? String(reqIx[tk]) : ('{' + f.token + '}');
+          const val = state.docValues[tk] != null ? state.docValues[tk] : '';
+          const attrs = [
+            `data-tok="${E(tk)}"`, `id="dt-${E(tk)}"`,
+            `placeholder="${E(ph)}"`, 'autocomplete="off"', `value="${E(val)}"`
+          ].join(' ');
+          return U.field(f.label || f.token, `<input ${attrs}>`, tok);
+        }).join('') +
+        `</div>`;
+      docFieldsWrap.querySelectorAll('[data-tok]').forEach(inp => {
+        inp.addEventListener('input', U.debounce(() => {
+          const tk = inp.dataset.tok;
+          if (String(inp.value).length) state.docValues[tk] = inp.value;
+          else delete state.docValues[tk];
+        }, 120));
+      });
+      // показать кнопку пакетной генерации, если у формы есть встроенные шаблоны
+      if (genPkgBtn){
+        const m = tplMapFor(state.form);
+        genPkgBtn.style.display = (m && Object.keys(m).length) ? '' : 'none';
+      }
+    }
 
     /* ====================================================================
        11. ДАННЫЕ ДЛЯ ДОКУМЕНТА  (синонимы полей шаблона)
@@ -638,22 +789,52 @@ SensorApp.register({
       const yes = await U.confirm({ title:'Очистить форму', message:'Сбросить все реквизиты и предпросмотр?', ok:'Очистить', cancel:'Отмена', danger:true });
       if (!yes) return;
       setVals(Object.fromEntries(FIELDS.map(f => [f.key, ''])));
+      state.docValues = {};
       root.querySelector('#lookup-inn').value = '';
       root.querySelector('#lookup-note').style.display = 'none';
       previewEmpty();
+      renderDocFields();
       runValidation(); updateCompleteness();
       ctx.toast('Форма очищена', 'info');
     });
+
+    const safeName = s => String(s || 'документ').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'документ';
+
+    // отрендерить ВСТРОЕННЫЙ b64-шаблон в .docx (Uint8Array). Бросает при ошибке.
+    function renderBuiltin(entry, values){
+      if (typeof PizZip === 'undefined' || typeof window === 'undefined' || !window.docxtemplater)
+        throw new Error('Библиотеки PizZip/docxtemplater недоступны');
+      const zip = new PizZip(entry.b64, { base64:true });
+      const toks = Array.isArray(entry.tokens) ? entry.tokens : null;
+      if (toks && !toks.length){
+        // графический бланк без полей — отдаём как есть
+        return zip.generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      }
+      const doc = new window.docxtemplater(zip, {
+        paragraphLoop:true, linebreaks:true,
+        delimiters:{ start:'{', end:'}' }, nullGetter:()=> ''
+      });
+      doc.render(values);
+      return doc.getZip().generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    }
 
     root.querySelector('#lic-gen').addEventListener('click', () => {
       const valid = validForGen();
       if (!valid.ok) return ctx.toast(valid.msg, 'err');
       const v = collect();
       const dt = docTypes.find(d => d.id === state.docType);
-      const base = ((dt ? dt.name : 'документ') + ' — ' + (v.name || state.form))
-        .replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const base = safeName((dt ? dt.name : 'документ') + ' — ' + (v.name || state.form));
+      const builtin = dt && dt.builtin ? tplEntry(state.form, dt.id) : null;
 
-      if (state.tpl){
+      if (builtin && builtin.b64){
+        // ПРИОРИТЕТ — встроенный реальный шаблон Спарты
+        try {
+          const u8 = renderBuiltin(builtin, builtinValues(state.form, dt.id));
+          const blob = new Blob([u8], { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          U.download(base + '.docx', blob);
+          ctx.toast('Документ из встроенного шаблона сгенерирован ✓', 'ok');
+        } catch (err){ ctx.toast('Ошибка генерации встроенного шаблона: ' + (err && err.message || err), 'err'); }
+      } else if (state.tpl){
         try {
           const zip = new PizZip(state.tpl);
           const doc = new window.docxtemplater(zip, {
@@ -675,6 +856,63 @@ SensorApp.register({
     });
 
     /* ====================================================================
+       13b. ПАКЕТНАЯ ГЕНЕРАЦИЯ — все встроенные документы формы → один .zip
+       (паритет с фабрикой УЦ: декод b64 → PizZip → docxtemplater → zip).
+       ==================================================================== */
+    const pkgProg = root.querySelector('#lic-pkg-progress');
+    function setPkgProgress(n, total, msg){
+      if (!pkgProg) return;
+      if (n >= total && !msg){ pkgProg.hidden = true; return; }
+      pkgProg.hidden = false;
+      const pct = total ? Math.round(n / total * 100) : 0;
+      pkgProg.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><div class="bar" style="flex:1"><span style="width:${pct}%"></span></div><span class="mono muted" style="white-space:nowrap">${E(msg || (n + ' из ' + total))}</span></div>`;
+    }
+    if (genPkgBtn) genPkgBtn.addEventListener('click', () => {
+      const m = tplMapFor(state.form);
+      const ids = m ? Object.keys(m) : [];
+      if (!ids.length) return ctx.toast('Для формы «' + state.form + '» нет встроенных шаблонов', 'err');
+      const valid = validForGen();
+      if (!valid.ok) return ctx.toast(valid.msg, 'err');
+      if (typeof PizZip === 'undefined' || typeof window === 'undefined' || !window.docxtemplater)
+        return ctx.toast('Библиотеки генерации .docx недоступны', 'err');
+
+      const v = collect();
+      const total = ids.length;
+      setPkgProgress(0, total, 'Подготовка…');
+      genPkgBtn.disabled = true;
+      const built = [];                 // {name, content}
+      const usedNames = {};
+      const uniqueName = base => { let n = base, i = 2; while (usedNames[n]){ n = base.replace(/\.docx$/i, '') + ' (' + (i++) + ').docx'; } usedNames[n] = true; return n; };
+      try {
+        ids.forEach((docId, i) => {
+          const e = m[docId] || {};
+          const title = e.name || docId;
+          setPkgProgress(i, total, 'Сборка: ' + title + '…');
+          if (!e.b64) return;           // нет тела шаблона — пропускаем
+          const u8 = renderBuiltin(e, builtinValues(state.form, docId));
+          built.push({ name: uniqueName(safeName(title) + '.docx'), content: u8 });
+        });
+        if (!built.length){ setPkgProgress(total, total, ''); return ctx.toast('Не из чего собирать пакет', 'err'); }
+        const orgTag = safeName(v.name || state.form);
+        if (built.length === 1){
+          const blob = new Blob([built[0].content], { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          U.download(built[0].name, blob);
+        } else {
+          setPkgProgress(total, total, 'Упаковка в .zip…');
+          const out = new PizZip();
+          built.forEach(b => out.file(b.name, b.content));
+          const zipBlob = out.generate({ type:'blob', mimeType:'application/zip' });
+          U.download('Пакет ' + state.form + ' — ' + orgTag + '.zip', zipBlob);
+        }
+        setPkgProgress(total, total, '');
+        ctx.toast('Пакет «' + state.form + '» собран: ' + built.length + ' док. ✓', 'ok');
+      } catch (err){
+        setPkgProgress(total, total, '');
+        ctx.toast('Ошибка генерации пакета: ' + (err && err.message || err), 'err');
+      } finally { genPkgBtn.disabled = false; }
+    });
+
+    /* ====================================================================
        14. ЧЕРНОВИКИ (ctx.store)
        ==================================================================== */
     function loadDrafts(){ const a = ctx.store.get(DRAFTS_KEY, []); return Array.isArray(a) ? a : []; }
@@ -691,7 +929,7 @@ SensorApp.register({
         id: 'dft_' + Date.now().toString(36),
         title: String(title).trim(),
         form: state.form, docType: state.docType, docName: dt ? dt.name : '',
-        vals: v, savedAt: new Date().toISOString()
+        vals: v, docValues: Object.assign({}, state.docValues), savedAt: new Date().toISOString()
       });
       saveDrafts(list.slice(0, 50));
       renderDrafts();
@@ -703,9 +941,10 @@ SensorApp.register({
       if (d.docType){ state.docType = d.docType; }
       // тип мог быть скрыт фильтром — сбрасываем фильтр, чтобы он отобразился
       state.docFilter = ''; docFilter.value = '';
+      state.docValues = (d.docValues && typeof d.docValues === 'object') ? Object.assign({}, d.docValues) : {};
       fillTypes();
       setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d.vals || {}));
-      runValidation(); updateCompleteness();
+      runValidation(); updateCompleteness(); renderDocFields();
       root.scrollTo ? root.scrollTo({ top:0 }) : null;
       ctx.toast('Черновик «' + (d.title || '') + '» загружен', 'ok');
     }
@@ -751,11 +990,12 @@ SensorApp.register({
         name: d.name,
         forms: d.forms,
         _id: d.id,
+        real: !!(d.builtin && (tplEntry('ООО', d.id) || tplEntry('ИП', d.id))),
         avail: d.forms.indexOf(state.form) >= 0
       }));
       wrap.innerHTML = U.table(rows, [
         { key:'name', label:'Тип документа', render:(val, r) =>
-            `${E(val)} ${r.avail ? '' : '<span class="badge" title="недоступен для выбранной формы">не для ' + E(state.form) + '</span>'}` },
+            `${E(val)} ${r.real ? '<span class="badge ok dot" title="есть встроенный .docx-бланк">реальный шаблон</span> ' : ''}${r.avail ? '' : '<span class="badge" title="недоступен для выбранной формы">не для ' + E(state.form) + '</span>'}` },
         { key:'forms', label:'Формы', width:'130px', render:(val) =>
             val.map(f => `<span class="badge${f===state.form?' info':''}">${E(f)}</span>`).join(' ') },
         { key:'_pick', label:'', align:'right', render:(_x, r) =>
@@ -774,6 +1014,7 @@ SensorApp.register({
        ==================================================================== */
     fillTypes();
     renderFields();
+    renderDocFields();   // после renderFields — чтобы плейсхолдеры подтянули реквизиты
     renderDrafts();
     renderCatalog();
     renderPassport();

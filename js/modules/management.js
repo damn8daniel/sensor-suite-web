@@ -19,6 +19,8 @@ SensorApp.register({
       run(){ const b=document.querySelector('#rnp-imp-amo'); if(b) b.click(); } },
     { id:'export-csv', title:'РНП: экспорт сводки (CSV)', hint:'Скачать таблицу план/факт', icon:'⤓',
       run(){ const b=document.querySelector('#rnp-export-csv'); if(b) b.click(); } },
+    { id:'reconcile-amo', title:'РНП: автосбор и сверка из amoCRM', hint:'Разнос сделок, план/факт, предохранитель', icon:'🛡',
+      run(){ const b=document.querySelector('#rnp-recon-run'); if(b) b.click(); } },
   ],
 
   mount(root, ctx){
@@ -112,7 +114,7 @@ SensorApp.register({
       updatedAt: null,
       filter: 'all',
       q: '',
-      view: (SensorStore.get('tabs_rnp_view') === 'table' || SensorStore.get('tabs_rnp_view') === 'import')
+      view: ['table','import','recon'].includes(SensorStore.get('tabs_rnp_view'))
               ? SensorStore.get('tabs_rnp_view') : 'dash',
     };
 
@@ -121,10 +123,15 @@ SensorApp.register({
        единый визуальный язык, без зависимости от рекурсивного ui.tabs. Каждая панель
        рисуется своей build-функцией в #rnp-body — соседние не теряют состояние. */
     const TABS = [
-      { id:'dash',   label:'Дашборд', build: buildDash  },
-      { id:'table',  label:'Таблица', build: buildTable },
-      { id:'import', label:'Импорт',  build: buildImport },
+      { id:'dash',    label:'Дашборд',           build: buildDash    },
+      { id:'table',   label:'Таблица',           build: buildTable   },
+      { id:'recon',   label:'Автосбор и сверка', build: buildRecon   },
+      { id:'import',  label:'Импорт',            build: buildImport  },
     ];
+
+    /* Состояние под-вкладки «Автосбор и сверка» (живёт в замыкании mount).
+       collected — результат последнего разноса сделок; пока null — пустое состояние. */
+    const recon = { collected: null, demo: true, note: '', source: '', at: null, busy: false };
 
     render();
 
@@ -173,6 +180,7 @@ SensorApp.register({
       body.appendChild(tab.build());
       bindFilters(body);
       if(state.view==='dash') bindDash(body);
+      if(state.view==='recon') bindRecon(body);
     }
 
     /* Делегирование кликов по интерактиву дашборда: KPI-плитка «Долги» (jump к блоку)
@@ -535,6 +543,413 @@ SensorApp.register({
       if(ds) ds.onclick = ()=>importSheets(frag.querySelector('#rnp-range') ? frag.querySelector('#rnp-range').value : null);
       if(da) da.onclick = importAmo;
       return frag;
+    }
+
+    /* ════════════════════════ ВКЛАДКА «АВТОСБОР И СВЕРКА» ════════════════════════
+       Прототип на МОК-данных amoCRM (реального ключа нет → ядро отдаёт mock()).
+       Сценарий: «Собрать из amoCRM» → ctx.integrations.amocrm.run('leads') →
+       разнос сделок по продуктам и регионам → сопоставление выручки с планом из
+       window.SEED.rnp → таблица «План / Факт / Δ» → «предохранитель»: список
+       несостыковок (непроставленные платежи, плательщик ≠ получатель, отставание
+       от ран-рейта) с бейджами риска. Всё помечено как демонстрация (mock). */
+    function buildRecon(){
+      const frag = document.createDocumentFragment();
+      const amo = integ('amocrm');
+      const def = defOf('amocrm');
+      const hasKeys = amo && amo.configured && amo.configured();
+      const webBlocked = def && def.webCapable === false && ctx.env === 'web';
+      const modeBadge = hasKeys && !webBlocked
+        ? ui.badge('ключи заданы','ok')
+        : ui.badge(webBlocked ? 'только desktop · демо-данные (mock)' : 'нет ключей · демо-данные (mock)','warn');
+
+      // Шапка под-вкладки + кнопка запуска.
+      frag.appendChild(htmlToEl(ui.card(`Автосбор и сверка ${modeBadge}`,
+        'Тянет сделки из amoCRM (leads), разносит их по продуктам и регионам и сверяет фактическую выручку с планом РНП. «Предохранитель» подсвечивает несостыковки: непроставленные платежи, расхождение плательщик ≠ получатель и отставание от ран-рейта. Без ключей amoCRM работает на обезличенных демо-данных (mock) — цифры показательные, не реальные.',
+        `<div class="btn-row">
+           <button class="btn primary" id="rnp-recon-run">🛡 Собрать из amoCRM</button>
+           <button class="btn ghost sm" id="rnp-recon-clear" title="Очистить результат сверки"${recon.collected?'':' disabled'}>↺ Сбросить</button>
+           <span class="spacer" style="flex:1"></span>
+           ${recon.collected
+              ? `<span class="badge ${recon.demo?'warn dot':'ok dot'}" title="${esc(recon.note||'')}">${recon.demo?'демо-данные (mock)':'amoCRM · '+esc(recon.source)}</span>`
+                + (recon.at?` <span class="badge" title="Время сбора">собрано ${esc(fmtTime(recon.at))}</span>`:'')
+              : ''}
+         </div>`)));
+
+      // Тело результата сверки (перерисовывается отдельно после сбора).
+      const out = document.createElement('div');
+      out.id = 'rnp-recon-out';
+      out.appendChild(buildReconBody());
+      frag.appendChild(out);
+      return frag;
+    }
+
+    /* Тело результата: либо пустое состояние, либо KPI + таблица «План/Факт/Δ»
+       + разносы по продуктам/регионам + предохранитель. */
+    function buildReconBody(){
+      const frag = document.createDocumentFragment();
+      if(recon.busy){
+        frag.appendChild(htmlToEl(ui.card('Сбор данных…', '', ui.skeleton({lines:4, widths:['90%','70%','80%','55%']}))));
+        return frag;
+      }
+      const c = recon.collected;
+      if(!c){
+        frag.appendChild(htmlToEl(ui.card('Сверка ещё не запускалась',
+          '', ui.empty('🛡',
+            'Нажмите «Собрать из amoCRM», чтобы разнести сделки по продуктам и регионам и сверить факт с планом. Без ключей покажутся демо-данные (mock).',
+            `<button class="btn sm primary" id="rnp-recon-run-2">🛡 Собрать из amoCRM</button>`))));
+        return frag;
+      }
+
+      // ── KPI-строка сверки ───────────────────────────────────────────────────
+      frag.appendChild(htmlToEl(reconKpi(c)));
+
+      // ── Таблица «План / Факт / Δ» по продуктам ─────────────────────────────
+      frag.appendChild(htmlToEl(reconPlanFactCard(c)));
+
+      // ── Разнос по регионам ─────────────────────────────────────────────────
+      frag.appendChild(htmlToEl(reconRegionCard(c)));
+
+      // ── Предохранитель: несостыковки ───────────────────────────────────────
+      frag.appendChild(htmlToEl(reconFuseCard(c)));
+      return frag;
+    }
+
+    function reconKpi(c){
+      const wonPct = c.dealsTotal ? Math.round(c.dealsWon/c.dealsTotal*100) : 0;
+      const rr = c.runRate;                       // {factToDate, target, pct, days, monthDays}
+      const rrCls = colorFor(rr.pct>=95?'ok':rr.pct>=80?'warn':'err');
+      const fuseCls = colorFor(c.fuses.some(f=>f.risk==='err')?'err':c.fuses.some(f=>f.risk==='warn')?'warn':'ok');
+      const tile = (label, valHtml, sub, opts)=>{
+        opts = opts||{};
+        const bar = opts.pct!=null
+          ? `<div class="bar" style="margin-top:14px" role="progressbar" aria-valuenow="${clampPct(opts.pct)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${clampPct(opts.pct)}%;background:${opts.color||'var(--accent)'}"></span></div>`
+          : '';
+        return `<div class="card" style="padding:15px 17px;display:flex;flex-direction:column">
+            <div class="hint" style="margin:0 0 7px">${esc(label)}</div>
+            <div style="font-size:24px;font-weight:700;line-height:1;color:${opts.color||'var(--ink)'}">${valHtml}</div>
+            ${sub?`<div class="hint" style="margin:7px 0 0">${sub}</div>`:''}
+            ${bar}
+          </div>`;
+      };
+      return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:16px;align-items:stretch">
+        ${tile('Собрано сделок', `${c.dealsTotal}<span class="hint" style="font-size:14px;font-weight:500"> шт</span>`,
+            `${c.dealsWon} выиграно · ${c.dealsOpen} в работе · ${c.dealsLost} отказ`, { pct:wonPct, color:colorFor(wonPct>=50?'ok':wonPct>=30?'warn':'err') })}
+        ${tile('Выручка (выигранные)', fmt(c.wonSum,'₽'), `${c.products.length} продуктов · ${c.regions.length} регионов`)}
+        ${tile('Ран-рейт месяца', rr.pct+'%',
+            `прогноз ${fmt(rr.projected,'₽')} из плана ${fmt(rr.monthPlan,'₽')} · день ${rr.days}/${rr.monthDays}`, { pct:rr.pct, color:rrCls })}
+        ${tile('Предохранитель', c.fuses.length ? `${c.fuses.length}<span class="hint" style="font-size:14px;font-weight:500"> несост.</span>` : 'чисто',
+            c.fuses.length ? `${c.fuses.filter(f=>f.risk==='err').length} критичных · ${c.fuses.filter(f=>f.risk==='warn').length} рисков` : 'несостыковок не найдено',
+            { color:fuseCls })}
+      </div>`;
+    }
+
+    function reconPlanFactCard(c){
+      const cols = [
+        { key:'product', label:'Продукт' },
+        { key:'cnt',     label:'Сделок', align:'right', mono:true },
+        { key:'plan',    label:'План',   align:'right', mono:true },
+        { key:'fact',    label:'Факт',   align:'right', mono:true },
+        { key:'delta',   label:'Δ',      align:'right', mono:true },
+        { key:'pct',     label:'%',      align:'right', mono:true },
+        { key:'status',  label:'Статус' },
+      ];
+      const rows = c.products.map(p=>{
+        const d = p.fact - p.plan;
+        const pct = p.plan>0 ? capPct(Math.round(p.fact/p.plan*100)) : (p.fact>0?100:0);
+        const st = pct>=95?'ok':pct>=80?'warn':'err';
+        const dCol = d>=0 ? 'var(--ok-d)' : 'var(--err-d)';
+        return {
+          product: p.name,
+          cnt: String(p.cnt),
+          plan: p.plan>0 ? fmt(p.plan,'₽') : '—',
+          fact: fmt(p.fact,'₽'),
+          delta: `<span style="color:${dCol}">${d>=0?'+':'−'}${fmt(Math.abs(d),'₽')}</span>`,
+          pct: pct+'%',
+          status: ui.badge(st==='ok'?'в плане':st==='warn'?'риск':'провал', st),
+        };
+      });
+      // Итоговая строка.
+      const totPlan = c.products.reduce((s,p)=>s+p.plan,0);
+      const totFact = c.products.reduce((s,p)=>s+p.fact,0);
+      const totD = totFact-totPlan;
+      const totPct = totPlan>0 ? capPct(Math.round(totFact/totPlan*100)) : (totFact>0?100:0);
+      rows.push({
+        product: 'ИТОГО',
+        cnt: String(c.dealsWon),
+        plan: fmt(totPlan,'₽'),
+        fact: fmt(totFact,'₽'),
+        delta: `<span style="color:${totD>=0?'var(--ok-d)':'var(--err-d)'};font-weight:600">${totD>=0?'+':'−'}${fmt(Math.abs(totD),'₽')}</span>`,
+        pct: `<b>${totPct}%</b>`,
+        status: ui.badge(totPct>=95?'в плане':totPct>=80?'риск':'провал', totPct>=95?'ok':totPct>=80?'warn':'err'),
+      });
+      const tbl = ui.table(rows, cols.map(col=>({
+        ...col,
+        render: ['delta','pct','status'].includes(col.key) ? (v=>v) : undefined,
+      })), {
+        maxHeight:'380px',
+        caption: `Выручка выигранных сделок против плана РНП по продуктам · период «${esc(state.rnp.period||'—')}»`,
+        empty:'Нет сделок для разноса.',
+      });
+      return ui.card('План / Факт / Δ по продуктам',
+        'План берётся из блоков РНП (выручка/маржа/сумма), факт — сумма выигранных сделок amoCRM по каждому продукту. Δ — отклонение факта от плана.',
+        tbl);
+    }
+
+    function reconRegionCard(c){
+      const cols = [
+        { key:'region', label:'Регион' },
+        { key:'cnt',    label:'Сделок', align:'right', mono:true },
+        { key:'won',    label:'Выиграно', align:'right', mono:true },
+        { key:'sum',    label:'Выручка', align:'right', mono:true },
+        { key:'share',  label:'Доля',   align:'right', mono:true },
+      ];
+      const totSum = c.regions.reduce((s,r)=>s+r.sum,0) || 1;
+      const rows = c.regions.map(r=>({
+        region: r.name,
+        cnt: String(r.cnt),
+        won: String(r.won),
+        sum: fmt(r.sum,'₽'),
+        share: Math.round(r.sum/totSum*100)+'%',
+      }));
+      const tbl = ui.table(rows, cols, {
+        maxHeight:'320px',
+        caption: 'Регион определяется эвристикой по сделке/компании (демо-разметка). В боевой версии — из поля сделки/компании amoCRM.',
+        empty:'Нет данных по регионам.',
+      });
+      return ui.card('Разнос по регионам',
+        'Распределение собранных сделок и выручки по регионам — для контроля географии продаж.',
+        tbl);
+    }
+
+    function reconFuseCard(c){
+      if(!c.fuses.length){
+        return `<div class="card" style="padding:13px 16px;display:flex;align-items:center;gap:11px;
+              border-left:3px solid var(--ok);background:linear-gradient(0deg,var(--ok-soft),transparent)">
+            <span style="font-size:20px;line-height:1">✓</span>
+            <div>
+              <div style="font-weight:600;color:var(--ok-d)">Предохранитель: несостыковок не найдено</div>
+              <div class="hint" style="margin:2px 0 0">Все выигранные сделки с проставленным платежом, плательщик совпадает с получателем, ран-рейт в норме.</div>
+            </div>
+          </div>`;
+      }
+      const errC = c.fuses.filter(f=>f.risk==='err').length;
+      const warnC = c.fuses.length-errC;
+      const items = c.fuses.map(f=>{
+        const col = colorFor(f.risk);
+        const lab = f.risk==='err'?'критично':'риск';
+        return `<div class="card" style="padding:11px 14px;box-shadow:none;border-left:3px solid ${col};display:flex;gap:11px;align-items:flex-start">
+            <span class="badge ${f.risk}" style="flex:0 0 auto;margin-top:1px">${lab}</span>
+            <div style="min-width:0">
+              <div style="font-weight:600;color:var(--ink)">${esc(f.title)}</div>
+              <div class="hint" style="margin:3px 0 0">${esc(f.detail)}</div>
+              ${f.ref?`<div class="mono" style="color:var(--ink-3);font-size:11px;margin-top:4px">${esc(f.ref)}</div>`:''}
+            </div>
+          </div>`;
+      }).join('');
+      return `<div class="card" style="border-left:3px solid ${errC?'var(--err)':'var(--warn)'}">
+          <h3>🛡 Предохранитель — несостыковки
+            ${errC?`<span class="badge err" style="vertical-align:1px">${errC} критич.</span>`:''}
+            ${warnC?`<span class="badge warn" style="vertical-align:1px">${warnC} риск</span>`:''}
+          </h3>
+          <p class="hint">Автоматические проверки по собранным сделкам. Демо-разметка на mock-данных amoCRM — в боевой версии правила те же, источник реальный.</p>
+          <div class="grid" style="gap:10px;margin-top:6px">${items}</div>
+        </div>`;
+    }
+
+    /* Привязка кнопок под-вкладки (делегирование переживает перерисовку тела). */
+    function bindRecon(scope){
+      scope.addEventListener('click', e=>{
+        if(e.target.closest('#rnp-recon-run') || e.target.closest('#rnp-recon-run-2')){ runReconcile(); return; }
+        if(e.target.closest('#rnp-recon-clear')){ clearReconcile(); return; }
+      });
+    }
+
+    function clearReconcile(){
+      recon.collected = null; recon.note=''; recon.source=''; recon.at=null; recon.busy=false;
+      refreshActivePanel();
+    }
+
+    /* Перерисовать панель «Автосбор» целиком (шапка под-вкладки несёт бейджи источника
+       и времени сбора, поэтому обновляем весь body таба, а не только #rnp-recon-out).
+       paintBody переинициализирует делегированные обработчики bindRecon. */
+    function repaintRecon(){
+      if(state.view!=='recon'){ return; }
+      paintBody();
+    }
+
+    /* Главный сценарий: собрать сделки из amoCRM (mock без ключей), разнести и сверить. */
+    async function runReconcile(){
+      const integration = integ('amocrm');
+      if(!integration){ ctx.toast('Интеграция amoCRM не подключена','err'); return; }
+      recon.busy = true;
+      repaintRecon();
+      try{
+        const res = await integration.run('leads');
+        const leads = pickLeads(res) || [];
+        if(!leads.length){
+          recon.busy=false;
+          ctx.toast('В ответе amoCRM нет сделок','err');
+          repaintRecon();
+          return;
+        }
+        recon.collected = reconcileLeads(leads);
+        recon.demo = !!res.mock;
+        recon.source = res.mock ? 'демо' : 'amoCRM';
+        recon.note = res.note || (res.mock ? 'демо-данные (mock) — amoCRM без ключей/CORS' : 'данные из amoCRM');
+        recon.at = new Date();
+        recon.busy = false;
+        repaintRecon();
+        const detail = `${recon.collected.dealsTotal} сделок · ${recon.collected.dealsWon} выиграно · ${recon.collected.fuses.length} несостыковок`;
+        if(res.error){ ctx.toast('amoCRM: '+res.error,'err'); }
+        else if(res.mock){ ctx.toast('amoCRM: показаны демо-данные (mock) — '+detail,'info'); }
+        else { ctx.toast('amoCRM: собрано и сверено ('+detail+') ✓','ok'); }
+      }catch(e){
+        recon.busy=false;
+        ctx.toast('Ошибка сбора: '+(e&&e.message||e),'err');
+        repaintRecon();
+      }
+    }
+
+    /* ── Разбор и сверка сделок ──────────────────────────────────────────────
+       Чистая функция: из массива leads строит {продукты, регионы, ран-рейт, предохранитель}.
+       Регион и «плательщик» в mock-данных amoCRM явно не заданы (и файл интеграции
+       не трогаем) — поэтому выводим их детерминированной эвристикой из имеющихся полей
+       (название/компания/статус) и честно помечаем как демо-разметку. */
+    function reconcileLeads(leads){
+      const cfVal = (l, code)=>{
+        const arr = (l.custom_fields_values||[]);
+        const f = arr.find(x=> String(x.field_code||'').toUpperCase()===code || String(x.field_name||'').toLowerCase().includes(code.toLowerCase()));
+        if(!f || !Array.isArray(f.values) || !f.values[0]) return null;
+        return f.values[0].value;
+      };
+      const isWon = l => l.status_id===142 || /won|оплач|закры реализ|выигр|успешно реализ/i.test(String(l.status||'').toLowerCase());
+      const isLost = l => l.status_id===143 || /не реализ|отказ|lost/i.test(String(l.status||'').toLowerCase());
+
+      // Разнос по продуктам (из custom field PRODUCT, иначе эвристика по имени).
+      const prodMap = new Map();
+      const regMap = new Map();
+      let wonSum=0, dealsWon=0, dealsLost=0, dealsOpen=0;
+      const fuses = [];
+
+      leads.forEach(l=>{
+        const product = String(cfVal(l,'PRODUCT') || guessProduct(l.name) || 'Прочее').trim();
+        const region  = guessRegion(l);
+        const price   = Number(l.price)||0;
+        const won = isWon(l), lost = isLost(l);
+        if(won) dealsWon++; else if(lost) dealsLost++; else dealsOpen++;
+
+        // продукты
+        if(!prodMap.has(product)) prodMap.set(product, { name:product, cnt:0, fact:0, plan:0 });
+        const pm = prodMap.get(product); pm.cnt++; if(won) pm.fact += price;
+
+        // регионы
+        if(!regMap.has(region)) regMap.set(region, { name:region, cnt:0, won:0, sum:0 });
+        const rm = regMap.get(region); rm.cnt++; if(won){ rm.won++; rm.sum += price; }
+
+        if(won){ wonSum += price; }
+
+        // ── ПРЕДОХРАНИТЕЛЬ ──
+        // 1) Непроставленный платёж: сделка выиграна, но сумма не заполнена (price<=0).
+        if(won && price<=0){
+          fuses.push({ risk:'err', title:'Непроставленный платёж',
+            detail:`Сделка отмечена как выигранная, но сумма (price) не заполнена — выручка не учтётся в РНП.`,
+            ref:`#${l.id} · ${l.name||''}` });
+        }
+        // 2) Плательщик ≠ получатель: компания сделки есть, но основной контакт-плательщик
+        //    отсутствует/не привязан — типовая причина расхождения «кто платил ≠ на кого договор».
+        const comp = l._embedded && l._embedded.companies && l._embedded.companies[0];
+        const cont = l._embedded && l._embedded.contacts && l._embedded.contacts[0];
+        if(won && comp && !cont){
+          fuses.push({ risk:'warn', title:'Плательщик ≠ получатель',
+            detail:`Оплата прошла по компании, но плательщик-контакт к сделке не привязан — проверьте, совпадает ли плательщик с получателем услуги (риск возврата/сверки с бухгалтерией).`,
+            ref:`#${l.id} · компания ${comp.id}` });
+        }
+        // 3) Госпошлина по лицензии не учтена (косвенный признак неполного платежа).
+        const gp = cfVal(l,'GOSPOSHLINA');
+        if(won && (/лицензи|переоформл/i.test(product)) && (gp==null || Number(gp)<=0)){
+          fuses.push({ risk:'warn', title:'Госпошлина не проставлена',
+            detail:`Лицензионная сделка выиграна, но поле «Госпошлина» пустое/ноль — возможно, платёж учтён не полностью.`,
+            ref:`#${l.id} · ${product}` });
+        }
+      });
+
+      // ── Сопоставление план/факт по продуктам с РНП ──
+      // План на продукт берём из «выручкоподобных» (₽) показателей блока «Продажи»/«Финансы»,
+      // распределяя совокупный план продаж пропорционально доле факта продукта (демо-логика).
+      const products = [...prodMap.values()].sort((a,b)=>b.fact-a.fact);
+      const salesPlan = revenuePlanFromRnp();
+      const factTotal = products.reduce((s,p)=>s+p.fact,0) || 1;
+      products.forEach(p=>{ p.plan = Math.round(salesPlan * (p.fact/factTotal)); });
+
+      const regions = [...regMap.values()].sort((a,b)=>b.sum-a.sum);
+
+      // ── Ран-рейт: факт-к-дате против пропорциональной доли месячного плана ──
+      const monthPlan = salesPlan;
+      const now = new Date();
+      const monthDays = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+      const days = now.getDate();
+      const target = Math.round(monthPlan * days / monthDays);    // сколько должно быть к этому дню
+      const projected = days>0 ? Math.round(wonSum / days * monthDays) : 0;
+      const rrPct = target>0 ? capPct(Math.round(wonSum/target*100)) : (wonSum>0?100:0);
+      const runRate = { factToDate: wonSum, target, projected, monthPlan, days, monthDays, pct: rrPct };
+
+      // 4) Отставание от ран-рейта (агрегатная проверка).
+      if(monthPlan>0 && rrPct < 80){
+        fuses.push({ risk: rrPct<60?'err':'warn', title:'Отставание от ран-рейта',
+          detail:`К ${days}-му дню месяца собрано ${fmt(wonSum,'₽')} при целевых ${fmt(target,'₽')} (${rrPct}%). Прогноз на месяц ${fmt(projected,'₽')} против плана ${fmt(monthPlan,'₽')} — темпа не хватает.`,
+          ref:`ран-рейт · день ${days}/${monthDays}` });
+      }
+
+      // сортируем предохранитель: критичные вперёд
+      fuses.sort((a,b)=> (a.risk===b.risk?0:(a.risk==='err'?-1:1)));
+
+      return {
+        dealsTotal: leads.length, dealsWon, dealsLost, dealsOpen,
+        wonSum, products, regions, runRate, fuses,
+      };
+    }
+
+    /* Совокупный «выручкоподобный» план продаж из РНП (₽-показатели блоков Продажи/Финансы). */
+    function revenuePlanFromRnp(){
+      let sum = 0;
+      state.rnp.blocks.forEach(b=>{
+        if(!/прода|финанс/i.test(b.name)) return;
+        (b.metrics||[]).forEach(m=>{
+          if(m.unit==='₽' && /маржа|маржинал|выручк|сумм|продаж/i.test(m.name) && !m.invert) sum += Number(m.plan)||0;
+        });
+      });
+      // запасной вариант — первый ₽-показатель блока продаж/финансов, иначе разумная демо-цифра
+      if(sum<=0){
+        outer:
+        for(const b of state.rnp.blocks){
+          for(const m of (b.metrics||[])){ if(m.unit==='₽' && !m.invert){ sum = Number(m.plan)||0; break outer; } }
+        }
+      }
+      return sum>0 ? sum : 4_500_000;
+    }
+
+    /* Эвристика продукта по названию сделки (если нет custom field). */
+    function guessProduct(name){
+      const n = String(name||'').toLowerCase();
+      if(/переоформл/.test(n)) return 'Переоформление';
+      if(/лицконтр|подтвержд соответ|лицензконтр/.test(n)) return 'Лицконтроль';
+      if(/аттпр|аттестац/.test(n)) return 'АТТПР';
+      if(/оборудован|аренд/.test(n)) return 'Оборудование';
+      if(/пакет|кросс|пивот/.test(n)) return 'Кросс-продажа';
+      if(/лицензи|мчс/.test(n)) return 'Лицензия МЧС';
+      return 'Прочее';
+    }
+
+    /* Демо-эвристика региона: детерминированно по id компании/сделки (стабильна между
+       перерисовками). В mock-данных amoCRM явного поля региона нет, файл интеграции
+       не трогаем — поэтому помечаем разметку как демонстрационную. */
+    function guessRegion(l){
+      const name = String(l.name||'');
+      if(/регион/i.test(name)) return 'Регионы РФ';
+      const REG = ['Москва','Московская обл.','Санкт-Петербург','Краснодарский край','Свердловская обл.'];
+      const comp = l._embedded && l._embedded.companies && l._embedded.companies[0];
+      const seed = Number((comp && comp.id) || l.id || 0);
+      return REG[seed % REG.length];
     }
 
     function logImport(html, type){
