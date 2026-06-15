@@ -796,18 +796,24 @@ SensorApp.register({
     // scorePct — «процент выполнения» для отображения.
     //   прямой: факт/план. инверсный (долги): если план 0 → 100% при факте 0, иначе насколько вышли за лимит.
     function scorePct(m){
-      const plan = Number(m.plan)||0, fact = Number(m.fact)||0;
+      // приводим к конечным неотрицательным числам: NaN/Infinity/мусор → 0,
+      // отрицательные план/факт для процента выполнения смысла не имеют (долг/объём ≥ 0).
+      const plan = fin(m.plan), fact = fin(m.fact);
       if(m.invert){
         if(plan===0) return fact>0 ? 0 : 100;          // план долга = 0; любой факт = провал
-        return Math.round((plan/(fact||plan))*100);     // лимит/факт: факт ≤ лимита → ≥100%
+        return capPct(Math.round((plan/(fact||plan))*100)); // лимит/факт: факт ≤ лимита → ≥100%
       }
       if(plan===0) return fact ? 100 : 0;
-      return Math.round((fact/plan)*100);
+      return capPct(Math.round((fact/plan)*100));
     }
+    // конечное неотрицательное число (защита от NaN/Infinity/отрицательных/строк)
+    function fin(v){ const n=Number(v); return (isFinite(n) && n>0) ? n : 0; }
+    // верхняя граница отображаемого процента — чтобы 100000% не ломал вёрстку плитки.
+    function capPct(p){ p = isFinite(p) ? p : 0; return p>999 ? 999 : (p<0 ? 0 : p); }
     // barFill — насколько закрашивать бар (всегда 0..100, понятно глазу).
     function barFill(m){
       if(m.invert){
-        const plan = Number(m.plan)||0, fact = Number(m.fact)||0;
+        const plan = fin(m.plan), fact = fin(m.fact);
         if(plan===0) return fact>0 ? 100 : 0;          // долг есть → бар «горит» полностью
         return clampPct((fact/plan)*100);               // насколько приблизились к лимиту
       }
@@ -816,7 +822,7 @@ SensorApp.register({
     // statusOf — ok/warn/err c учётом инверсии.
     function statusOf(m){
       if(m.invert){
-        const plan = Number(m.plan)||0, fact = Number(m.fact)||0;
+        const plan = fin(m.plan), fact = fin(m.fact); // те же конечные неотрицательные значения, что и в scorePct
         if(plan===0) return fact>0 ? 'err' : 'ok';      // нулевой лимит долга
         if(fact<=plan) return 'ok';
         if(fact<=plan*1.2) return 'warn';
@@ -920,10 +926,17 @@ SensorApp.register({
     function unitFromName(name){ return guessUnit(name||''); }
     function numOr0(v){ const n=Number(v); return isNaN(n)?0:n; }
 
+    // Периоды для переключателя. Раньше сюда подмешивались period из внутреннего
+    // демо-набора SEED_RNP и из ctx.data.rnp — но переключение на «чужой» период
+    // не подгружало другой набор данных (switchPeriod лишь переименовывает текущий),
+    // поэтому дропдаун предлагал фантомный период-пустышку. Отдаём только период
+    // активного набора (baseSeed): если у него есть несколько реальных периодов —
+    // они уже внутри одного источника; иначе показываем один (badge вместо select).
     function collectPeriods(){
       const set = new Set();
       if(state.rnp.period) set.add(state.rnp.period);
-      [SEED_RNP, ctx.data && ctx.data.rnp].forEach(s=>{ if(s && s.period) set.add(s.period); });
+      const src = baseSeed;
+      if(src && Array.isArray(src.periods)) src.periods.forEach(p=>{ if(p) set.add(p); });
       return [...set];
     }
     function rangeFor(){ return state.rnp.period ? `'${state.rnp.period}'!A1:D200` : 'РНП!A1:D200'; }

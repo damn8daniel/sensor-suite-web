@@ -55,6 +55,10 @@
     soapNs: SOAP_NS,
     restBase: REST_BASE,
 
+    // Таймаут одиночного транспортного вызова (мс) и число повторов на 5xx/таймауте.
+    timeoutMs: 15000,
+    maxRetries: 2,
+
     // Подсказка про корпоративный доступ — модуль/настройки могут показать.
     accessNote:
       'SPARK Интерфакс — платный корпоративный сервис. Для реальных запросов ' +
@@ -89,14 +93,15 @@
         : fetch;
 
       var auth = basicAuth(creds.login, creds.key);
+      var cfg = { timeoutMs: this.timeoutMs || 15000, maxRetries: this.maxRetries != null ? this.maxRetries : 2 };
       var report;
 
       try {
-        report = await soapCall(doFetch, op, inn, auth, creds);
+        report = await soapCall(doFetch, op, inn, auth, creds, cfg);
       } catch (soapErr) {
         // SPARK поддерживает и REST-шлюз — пробуем его как запасной транспорт.
         try {
-          report = await restCall(doFetch, op, inn, auth, creds);
+          report = await restCall(doFetch, op, inn, auth, creds, cfg);
         } catch (restErr) {
           throw new Error(
             'SPARK не ответил. SOAP: ' + short(soapErr) + ' · REST: ' + short(restErr) +
@@ -151,7 +156,7 @@
   /* ════════════════════════ ТРАНСПОРТ ════════════════════════ */
 
   /* SOAP 1.1: SPARK.GetCompanyShortReport / GetCompanyExtendedReport по ИНН. */
-  async function soapCall(doFetch, op, inn, auth, creds) {
+  async function soapCall(doFetch, op, inn, auth, creds, cfg) {
     var url = baseHost(creds, SOAP_ENDPOINT);
     var envelope =
       '<?xml version="1.0" encoding="utf-8"?>' +
@@ -165,7 +170,7 @@
         '</soap:Body>' +
       '</soap:Envelope>';
 
-    var resp = await doFetch(url, {
+    var resp = await fetchWithRetry(doFetch, url, {
       method: 'POST',
       headers: {
         'Content-Type': 'text/xml; charset=utf-8',
@@ -173,10 +178,10 @@
         'Authorization': 'Basic ' + auth
       },
       body: envelope
-    });
+    }, cfg, 'SOAP');
     if (!resp.ok) {
       var t = await resp.text().catch(function () { return ''; });
-      throw new Error('SOAP HTTP ' + resp.status + (t ? ' · ' + t.slice(0, 160) : ''));
+      throw new Error(httpLabel('SOAP', resp.status) + (t ? ' · ' + t.slice(0, 160) : ''));
     }
     var xml = await resp.text();
     var faultMsg = soapFault(xml);
@@ -185,20 +190,78 @@
   }
 
   /* REST-шлюз SPARK (современная альтернатива SOAP): GET /v1/<Op>?inn=… */
-  async function restCall(doFetch, op, inn, auth, creds) {
+  async function restCall(doFetch, op, inn, auth, creds, cfg) {
     var base = baseHost(creds, REST_BASE);
     var url = base + '/' + op + '?inn=' + encodeURIComponent(inn);
-    var resp = await doFetch(url, {
+    var resp = await fetchWithRetry(doFetch, url, {
       method: 'GET',
       headers: { 'Accept': 'application/json', 'Authorization': 'Basic ' + auth }
-    });
+    }, cfg, 'REST');
     if (!resp.ok) {
       var t = await resp.text().catch(function () { return ''; });
-      throw new Error('REST HTTP ' + resp.status + (t ? ' · ' + t.slice(0, 160) : ''));
+      throw new Error(httpLabel('REST', resp.status) + (t ? ' · ' + t.slice(0, 160) : ''));
     }
     var raw = await resp.text();
     try { return JSON.parse(raw); }
     catch (e) { return parseSparkXml(raw); } // некоторые шлюзы отдают XML и на REST
+  }
+
+  /* ──────────────── Транспорт: таймаут (AbortController) + ретрай ────────────────
+     Повторяем на сетевых сбоях / таймауте / 5xx с экспоненциальной паузой.
+     Жёсткие коды (401/403/429/4xx) возвращаем сразу — вызыватель разберёт через
+     httpLabel(). cfg = { timeoutMs, maxRetries }. */
+  async function fetchWithRetry(doFetch, url, opts, cfg, kind) {
+    cfg = cfg || {};
+    var timeoutMs = cfg.timeoutMs || 15000;
+    var maxRetries = cfg.maxRetries != null ? cfg.maxRetries : 2;
+    var lastErr = null;
+
+    for (var attempt = 0; attempt <= maxRetries; attempt++) {
+      var ctl = sparkAbort(timeoutMs);
+      var resp;
+      try {
+        resp = await doFetch(url, assign({}, opts, { signal: ctl.signal }));
+      } catch (e) {
+        var timedOut = ctl.timedOut;
+        ctl.clear();
+        lastErr = e;
+        if (attempt < maxRetries) { await sparkSleep(sparkBackoff(attempt)); continue; }
+        if (timedOut) throw new Error(kind + ': нет ответа за ' + Math.round(timeoutMs / 1000) + ' с (таймаут)');
+        throw new Error(kind + ': ' + short(e));
+      }
+      ctl.clear();
+      // 5xx — временный сбой сервиса: повторяем.
+      if (resp.status >= 500 && attempt < maxRetries) { await sparkSleep(sparkBackoff(attempt)); continue; }
+      return resp;
+    }
+    throw new Error(kind + ': ' + short(lastErr || 'нет ответа'));
+  }
+
+  /* HTTP-код → понятная метка (авторизация/права/лимит/прочее). */
+  function httpLabel(kind, status) {
+    if (status === 401) return kind + ' HTTP 401 — неверный логин/ключ SPARK (проверьте корпоративный доступ)';
+    if (status === 403) return kind + ' HTTP 403 — доступ запрещён (IP не в белом списке или нет прав на отчёт)';
+    if (status === 429) return kind + ' HTTP 429 — превышен лимит запросов SPARK, сбавьте темп';
+    if (status >= 500)  return kind + ' HTTP ' + status + ' — сбой на стороне SPARK, попробуйте позже';
+    return kind + ' HTTP ' + status;
+  }
+
+  function sparkAbort(ms) {
+    if (typeof AbortController === 'undefined') return { signal: undefined, timedOut: false, clear: function () {} };
+    var ctl = new AbortController();
+    var obj = { signal: ctl.signal, timedOut: false, clear: function () { clearTimeout(timer); } };
+    var timer = setTimeout(function () { obj.timedOut = true; try { ctl.abort(); } catch (e) {} }, ms);
+    return obj;
+  }
+  function sparkSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function sparkBackoff(attempt) { return Math.min(4000, 500 * Math.pow(2, attempt)); }
+  /* Object.assign-полифилл (не тащим зависимостей; merge мелких объектов опций). */
+  function assign(target) {
+    for (var i = 1; i < arguments.length; i++) {
+      var src = arguments[i];
+      if (src) for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k)) target[k] = src[k];
+    }
+    return target;
   }
 
   /* Если в кредах задан свой host — используем его, иначе дефолт.

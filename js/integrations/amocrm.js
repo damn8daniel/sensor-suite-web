@@ -26,6 +26,9 @@ SensorApp.registerIntegration({
   pageSize: 50,
   // Предохранитель авто-пагинации: не утянуть случайно тысячи страниц.
   maxPagesDefault: 20,
+  // Таймаут одиночного запроса (мс) и максимум повторов на сетевых/5xx/429 сбоях.
+  timeoutMs: 15000,
+  maxRetries: 3,
 
   /* ── Основной интерфейс ────────────────────────────────────────────────────
      method : 'leads' | 'pipelines' | 'contacts' | 'companies' | 'account'
@@ -83,25 +86,42 @@ SensorApp.registerIntegration({
              _links: (body && body._links) || first._links || {} };
   },
 
-  /* ── Низкоуровневый запрос с обработкой 401/429 и desktop-мостом ────────────
-     401 — токен протух/невалиден; 429 — лимит (читаем Retry-After и ретраим).
-     В desktop запрос идёт через SensorApp.node.fetch (минуя CORS), иначе fetch. */
+  /* ── Низкоуровневый запрос с таймаутом, обработкой 401/403/429/5xx и мостом ──
+     Таймаут через AbortController; 401 — токен протух; 403 — нет прав;
+     429/5xx/таймаут/сетевой сбой — ретрай с экспоненциальной паузой (уважает
+     Retry-After). В desktop запрос идёт через SensorApp.node.fetch (минуя CORS). */
   async _request(url, token, attempt){
     attempt = attempt || 0;
     const doFetch = (SensorApp.env === 'desktop' && SensorApp.node && SensorApp.node.fetch)
       ? SensorApp.node.fetch : fetch;
+    const timeoutMs = this.timeoutMs || 15000;
+    const maxRetries = this.maxRetries != null ? this.maxRetries : 3;
 
     let resp;
+    const ctl = this._abort(timeoutMs);
     try {
       resp = await doFetch(url, {
         method: 'GET',
-        headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + token }
+        headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + token },
+        signal: ctl.signal
       });
     } catch(netErr){
+      const timedOut = ctl.timedOut;
+      ctl.clear();
+      // Таймаут/сетевой сбой — повторяем (GET идемпотентен).
+      if (attempt < maxRetries){
+        await new Promise(r => setTimeout(r, Math.min(8000, 500 * Math.pow(2, attempt))));
+        return this._request(url, token, attempt + 1);
+      }
+      if (timedOut){
+        throw new Error('amoCRM не ответил за ' + Math.round(timeoutMs / 1000) +
+          ' с (таймаут). Повторите позже или проверьте доступ к *.amocrm.ru.');
+      }
       // Сетевой сбой / блокировка CORS в вебе — даём осмысленную подсказку.
       throw new Error('Нет связи с amoCRM (' + String(netErr && netErr.message || netErr) +
         '). amoCRM не отдаёт CORS — реальные запросы доступны в desktop-версии.');
     }
+    ctl.clear();
 
     if (resp.status === 204) return { _embedded: {} };   // пустая коллекция
 
@@ -110,19 +130,30 @@ SensorApp.registerIntegration({
         'Обновите долгоживущий access-токен в карточке интеграции amoCRM и впишите его в Настройках.');
     }
 
+    if (resp.status === 403){
+      throw new Error('403 — нет прав на этот ресурс amoCRM (проверьте права интеграции).');
+    }
+
     if (resp.status === 429){
       // Лимит запросов. amoCRM подсказывает паузу в Retry-After (секунды).
       const ra = Number(resp.headers && resp.headers.get && resp.headers.get('Retry-After'));
       const waitMs = (ra > 0 ? ra : Math.min(8, Math.pow(2, attempt))) * 1000;
-      if (attempt < 3){
+      if (attempt < maxRetries){
         await new Promise(r => setTimeout(r, waitMs));
         return this._request(url, token, attempt + 1);
       }
       throw new Error('429 — превышен лимит запросов amoCRM (≈7 rps). Повторите позже.');
     }
 
-    if (resp.status === 403){
-      throw new Error('403 — нет прав на этот ресурс amoCRM (проверьте права интеграции).');
+    if (resp.status >= 500){
+      // Временный сбой сервиса — повторяем с паузой.
+      if (attempt < maxRetries){
+        await new Promise(r => setTimeout(r, Math.min(8000, 500 * Math.pow(2, attempt))));
+        return this._request(url, token, attempt + 1);
+      }
+      let d5 = '';
+      try { const t = await resp.text(); d5 = t ? ' · ' + t.slice(0, 200) : ''; } catch(e){}
+      throw new Error('Сбой на стороне amoCRM (HTTP ' + resp.status + ')' + d5 + '. Попробуйте позже.');
     }
 
     if (!resp.ok){
@@ -136,6 +167,16 @@ SensorApp.registerIntegration({
     if (!text) return { _embedded: {} };
     try { return JSON.parse(text); }
     catch(e){ throw new Error('Некорректный JSON от amoCRM: ' + text.slice(0, 120)); }
+  },
+
+  /* AbortController с таймаутом. .clear() снимает таймер; .timedOut — флаг отмены
+     по таймауту (чтобы отличить таймаут от обычного сетевого сбоя/CORS). */
+  _abort(ms){
+    if (typeof AbortController === 'undefined') return { signal: undefined, timedOut: false, clear(){} };
+    const ctl = new AbortController();
+    const obj = { signal: ctl.signal, timedOut: false, clear(){ clearTimeout(timer); } };
+    const timer = setTimeout(() => { obj.timedOut = true; try { ctl.abort(); } catch(e){} }, ms);
+    return obj;
   },
 
   /* Сбор query-параметров страницы из пользовательских params. */

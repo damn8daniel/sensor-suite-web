@@ -729,7 +729,12 @@ SensorApp.register({
              <input data-loop-tok="${U.escape(loop.name)}" data-tok="${U.escape(tok)}" placeholder="${U.escape(tok)}" value="${U.escape(vals[tok]||'')}">
            </div>`).join('') +
         `<button class="btn ghost sm doc-loop-del" type="button" title="Удалить строку" aria-label="Удалить строку">✕</button>`;
-      row.querySelector('.doc-loop-del').onclick = () => { row.remove(); updateProgress(host.closest('#doc-form')); };
+      // автосохранение/прогресс для строк, добавленных ПОСЛЕ первичного bindFormEvents
+      // (кнопка «＋ Добавить строку», восстановление из истории): без этого правки в
+      // новых строках петель не попадали в черновик.
+      const syncRow = () => { const fw = host.closest('#doc-form'); updateProgress(fw); saveDraft(fw, (detected && detected.loops) || []); };
+      row.querySelectorAll('[data-loop-tok]').forEach(inp => inp.addEventListener('input', U.debounce(syncRow, 300)));
+      row.querySelector('.doc-loop-del').onclick = () => { row.remove(); syncRow(); };
       host.appendChild(row);
     }
 
@@ -759,10 +764,17 @@ SensorApp.register({
 
     function bindFormEvents(formWrap, loops){
       const onAny = U.debounce(() => { updateProgress(formWrap); saveDraft(formWrap, loops); }, 300);
-      formWrap.querySelectorAll('[data-tok]').forEach(inp => {
+      // Валидация — только по плоским полям (.doc-field): у них есть собственный
+      // блок ошибок [data-err]. Поля петель ([data-loop-tok]) разделяют имя токена
+      // с плоскими, но своего блока ошибок не имеют — гоняя их через liveValidate(),
+      // мы бы вешали ошибку петли на ЧУЖОЕ плоское поле с тем же токеном. Поэтому
+      // у петель только автосохранение/прогресс, без валидации.
+      formWrap.querySelectorAll('.doc-field [data-tok]').forEach(inp => {
         inp.addEventListener('input', () => { liveValidate(formWrap, inp); onAny(); });
         inp.addEventListener('blur', () => liveValidate(formWrap, inp, true));
       });
+      // Поля петель ([data-loop-tok]) сами вешают автосохранение/прогресс в addLoopRow()
+      // — там оно работает и для строк, добавленных уже после первичной отрисовки.
       const gen = formWrap.querySelector('#doc-gen'); if (gen) gen.onclick = () => doGenerate(formWrap, loops);
       formWrap.querySelector('#doc-preview').onclick = () => doPreview(formWrap, loops);
       formWrap.querySelector('#doc-print').onclick = () => doPrint(formWrap, loops);

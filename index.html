@@ -24,7 +24,7 @@
   background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:7px 8px 7px 12px;cursor:text;
   transition:.14s;min-width:200px}
 .global-search:hover{border-color:var(--line-2);color:var(--ink-2)}
-.global-search:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.global-search:focus-visible{outline:none;border-color:var(--accent);box-shadow:var(--ring)}
 .global-search .gs-ic{font-size:15px;line-height:1}
 .global-search .gs-text{flex:1;text-align:left}
 .global-search .gs-kbd{margin-left:auto}
@@ -32,9 +32,10 @@
 
 /* индикатор демо-данных */
 .demo-indicator{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12px;font-weight:600;
-  color:var(--warn);background:#fdf3e3;border:1px solid transparent;border-radius:999px;padding:5px 11px;cursor:pointer;transition:.14s;white-space:nowrap}
+  color:var(--warn-d);background:var(--warn-soft);border:1px solid transparent;border-radius:999px;padding:5px 11px;cursor:pointer;transition:.14s;white-space:nowrap;min-height:24px}
 .demo-indicator:hover{filter:brightness(.97)}
-[data-theme="dark"] .demo-indicator{background:#2c220d}
+.demo-indicator:focus-visible{outline:none;box-shadow:var(--ring)}
+[data-theme="dark"] .demo-indicator{color:var(--warn);background:var(--warn-soft)}
 .demo-indicator .demo-dot{width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 0 rgba(200,136,26,.45);animation:demopulse 2s infinite}
 @keyframes demopulse{0%{box-shadow:0 0 0 0 rgba(200,136,26,.4)}70%{box-shadow:0 0 0 6px rgba(200,136,26,0)}100%{box-shadow:0 0 0 0 rgba(200,136,26,0)}}
 
@@ -46,9 +47,10 @@
 .modal-x{position:absolute;top:12px;right:12px;width:30px;height:30px;display:grid;place-items:center;border:none;background:transparent;
   color:var(--muted);font-size:22px;line-height:1;border-radius:8px;cursor:pointer;transition:.12s}
 .modal-x:hover{background:var(--panel-2);color:var(--ink)}
+.modal-x:focus-visible{outline:none;box-shadow:var(--ring);color:var(--ink)}
 .modal-msg{margin:0 0 14px;font-size:14px;color:var(--ink-2);line-height:1.55}
 .pm-label{display:block;font-size:12.5px;font-weight:550;margin-bottom:6px;color:var(--ink-2)}
-input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px var(--err-soft)}
+input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px color-mix(in srgb, var(--err) 25%, transparent)}
 
 /* кнопка-danger (для confirm) */
 .btn.danger{background:var(--err);border-color:var(--err);color:#fff}
@@ -73,7 +75,7 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px var(
   padding:10px 14px 11px;cursor:pointer;white-space:nowrap;transition:.12s;border-bottom:2px solid transparent;margin-bottom:-1px}
 .tabs-underline .tab:hover{color:var(--ink-2)}
 .tabs-underline .tab.active{color:var(--ink);border-bottom-color:var(--accent)}
-.tabs-underline .tab:focus-visible,.pill-tabs .pill:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-soft);border-radius:8px}
+.tabs-underline .tab:focus-visible,.pill-tabs .pill:focus-visible{outline:none;box-shadow:var(--ring);border-radius:8px;position:relative;z-index:1}
 .pill-tabs .pill{font:inherit;background:var(--panel);transition:.12s}
 .t-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;
   font-size:11px;font-weight:600;line-height:1;padding:0 6px;border-radius:999px;
@@ -122,10 +124,19 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px var(
 .cmdk-count{margin-left:auto}
 @media(max-width:520px){.cmdk-bg{padding:8vh 12px 12px}.cmdk-foot{display:none}}
 
+/* тач-цели оболочки: на грубом указателе крестик модалки и пункты палитры
+   крупнее для уверенного нажатия (WCAG 2.5.8). Mouse-раскладка не меняется. */
+@media(pointer:coarse){
+  .modal-x{width:40px;height:40px;font-size:24px}
+  .cmdk-item{padding:12px}
+  .global-search{padding:10px 12px}
+}
+
 @media(prefers-reduced-motion:reduce){
   .modal,.cmdk,.modal-bg,.cmdk-bg{transition:none}
   .sk-line{animation:none}
   .demo-indicator .demo-dot{animation:none}
+  .global-search,.demo-indicator,.modal-x{transition:none}
 }
 </style>
 <!-- генерация .docx в браузере (локальные библиотеки, без CDN — работает офлайн) -->

@@ -217,6 +217,16 @@ SensorApp.register({
 
     /* ── Состояние формы. Единственный источник истины для calc(). ── */
     function blankPositions(){ return [{ name:'', qty:'1', price:'' }]; }
+    /* Привести позиции к ожидаемой форме: массив объектов {name,qty,price}.
+     * Защита от битого localStorage (строка вместо массива, null/числа внутри),
+     * чтобы renderPositions()/calc() не падали на p.name/p.qty. Пусто → одна строка. */
+    function sanitizePositions(raw){
+      if (!Array.isArray(raw)) return blankPositions();
+      const out = raw
+        .filter(p => p && typeof p === 'object')
+        .map(p => ({ name:String(p.name==null?'':p.name), qty:String(p.qty==null?'':p.qty), price:String(p.price==null?'':p.price) }));
+      return out.length ? out : blankPositions();
+    }
     function freshState(dirId){
       return {
         direction: dirId || DIRECTIONS[0].id,
@@ -242,7 +252,11 @@ SensorApp.register({
     // черновик из store (например, после возврата из истории) или свежий
     let state = (function(){
       const d = ctx.store.get(DRAFT_KEY, null);
-      if (d && Array.isArray(d.positions)) return Object.assign(freshState(), d);
+      if (d && typeof d === 'object' && Array.isArray(d.positions)){
+        const st = Object.assign(freshState(), d);
+        st.positions = sanitizePositions(st.positions);
+        return st;
+      }
       return freshState();
     })();
     let requisites = Object.assign({}, DEFAULT_REQUISITES, ctx.store.get('nok_requisites', {}) || {});
@@ -710,7 +724,12 @@ SensorApp.register({
     }
 
     /* ─────────────────────── ИСТОРИЯ ─────────────────────── */
-    function loadHistory(){ const a = ctx.store.get(STORE_KEY, []); return Array.isArray(a) ? a : []; }
+    // Терпимы к битому localStorage: отбрасываем не-объекты/null-записи, чтобы
+    // одна повреждённая строка не роняла hero-дельту, сводку и таблицу истории.
+    function loadHistory(){
+      const a = ctx.store.get(STORE_KEY, []);
+      return Array.isArray(a) ? a.filter(x => x && typeof x === 'object') : [];
+    }
     function persistHistory(a){ ctx.store.set(STORE_KEY, a); }
 
     function saveInvoice(r){
@@ -733,6 +752,9 @@ SensorApp.register({
       const snap = loadHistory().find(x=>x.id===id);
       if (!snap || !snap.state) return;
       state = Object.assign(freshState(), snap.state);
+      // защита от битого снимка: positions обязан остаться корректным массивом
+      // объектов, иначе renderPositions()/calc() упадут на p.name/p.qty.
+      state.positions = sanitizePositions(state.positions);
       persistDraft();
       $('#f-dir').value = state.direction; $('#f-reg').value = state.region;
       $('#f-client').value = state.client; $('#f-num').value = state.number;

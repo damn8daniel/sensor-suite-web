@@ -136,7 +136,11 @@ SensorApp.register({
     /* ============================================================
        2. Картотека (ctx.store) — дедуп по ИНН, поиск, экспорт
        ============================================================ */
-    function load(){ const a = ctx.store.get(STORE_KEY, []); return Array.isArray(a) ? a : []; }
+    // защитное чтение: store мог быть повреждён (ручная правка, кривой импорт),
+    // поэтому отбрасываем не-объекты (null/строки/числа) — иначе forEach/map по
+    // картотеке падает на c.source/c.savedAt. Это единый чокпоинт для всех
+    // потребителей (renderToolbar/filteredSorted/renderStats/exportJson…).
+    function load(){ const a = ctx.store.get(STORE_KEY, []); return Array.isArray(a) ? a.filter(c => c && typeof c === 'object') : []; }
     function persist(a){ ctx.store.set(STORE_KEY, a); }
     function digits(s){ return String(s == null ? '' : s).replace(/\D/g, ''); }
     function hasInn(card){ return card && card.inn && card.inn !== '—' && digits(card.inn).length >= 10; }
@@ -144,7 +148,7 @@ SensorApp.register({
     let view = { q: '', src: 'all', sort: 'recent', flag: 'all' };
 
     /* ----- история недавних пробивов (быстрый повтор по ИНН/названию) ----- */
-    function loadRecent(){ const a = ctx.store.get(RECENT_KEY, []); return Array.isArray(a) ? a : []; }
+    function loadRecent(){ const a = ctx.store.get(RECENT_KEY, []); return Array.isArray(a) ? a.filter(r => r && typeof r === 'object' && r.q != null) : []; }
     function pushRecent(q, source){
       q = String(q || '').trim();
       if (!q) return;

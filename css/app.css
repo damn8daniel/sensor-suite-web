@@ -10,7 +10,7 @@
   /* Базовая палитра (light) */
   --bg:#f5f6f9; --bg-2:#eef1f5;
   --panel:#ffffff; --panel-2:#f7f9fb; --panel-3:#fbfcfd;
-  --ink:#141925; --ink-2:#4a5468; --ink-3:#6b7585; --muted:#8a93a3;
+  --ink:#141925; --ink-2:#4a5468; --ink-3:#6b7585; --muted:#727c8c;
   --line:#e7ebf1; --line-2:#d8dee7; --line-3:#cbd3de;
 
   /* Бренд / акцент */
@@ -34,9 +34,11 @@
   --shadow-l:0 4px 8px -2px rgba(20,26,34,.08),0 24px 48px -12px rgba(20,26,34,.22);
   --shadow-pop:0 12px 32px -8px rgba(20,26,34,.20),0 2px 6px rgba(20,26,34,.08);
 
-  /* Кольцо фокуса */
-  --ring:0 0 0 3px var(--accent-soft);
-  --ring-strong:0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
+  /* Кольцо фокуса — видимое (WCAG 2.4.11): контрастный контур + мягкое гало.
+     Раньше было только бледное --accent-soft → почти невидимо на белом. */
+  --ring:0 0 0 2px var(--panel),0 0 0 4px var(--accent),0 0 0 7px var(--accent-soft);
+  --ring-strong:0 0 0 2px var(--panel),0 0 0 4px var(--accent),
+                0 0 0 7px color-mix(in srgb, var(--accent) 32%, transparent);
 
   /* Геометрия каркаса */
   --sidebar-w:272px;
@@ -60,7 +62,7 @@
 [data-theme="dark"]{
   --bg:#0d1015; --bg-2:#0a0c10;
   --panel:#161a21; --panel-2:#1b212b; --panel-3:#1f262f;
-  --ink:#e9edf3; --ink-2:#aeb7c5; --ink-3:#8b95a5; --muted:#6b7585;
+  --ink:#e9edf3; --ink-2:#aeb7c5; --ink-3:#8b95a5; --muted:#7c8696;
   --line:#242a34; --line-2:#2f3744; --line-3:#3a4350;
 
   --accent:#e4503f; --accent-d:#cf3b29; --accent-dd:#b62f1e;
@@ -78,8 +80,9 @@
   --shadow-l:0 4px 8px -2px rgba(0,0,0,.4),0 24px 48px -12px rgba(0,0,0,.6);
   --shadow-pop:0 12px 32px -8px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.4);
 
-  --ring:0 0 0 3px var(--accent-soft);
-  --ring-strong:0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  --ring:0 0 0 2px var(--panel),0 0 0 4px var(--accent),0 0 0 7px var(--accent-soft);
+  --ring-strong:0 0 0 2px var(--panel),0 0 0 4px var(--accent),
+                0 0 0 7px color-mix(in srgb, var(--accent) 40%, transparent);
 
   color-scheme:dark;
 }
@@ -114,6 +117,18 @@ a:hover{color:var(--accent)}
 img,svg{vertical-align:middle}
 ::selection{background:var(--accent-soft-2);color:var(--accent-dd)}
 [data-theme="dark"] ::selection{background:var(--accent-soft-2);color:var(--ink)}
+
+/* Доступность: видимый фокус на ЛЮБОМ интерактивном элементе (WCAG 2.4.7/2.4.11).
+   Базовый страховочный ринг — отдельные компоненты ниже могут переопределять форму
+   (радиус), но не отменяют видимость. Используем :focus-visible, чтобы мышь не
+   подсвечивала элементы лишний раз. */
+a:focus-visible,button:focus-visible,[role="button"]:focus-visible,
+[tabindex]:focus-visible,summary:focus-visible,label.btn:focus-visible{
+  outline:none;box-shadow:var(--ring);border-radius:var(--radius-xs);
+  position:relative;z-index:1;
+}
+/* Ссылки внутри текста: ринг плотнее к глифам */
+a:focus-visible{border-radius:var(--radius-xs);text-decoration:underline}
 
 /* ---------- 3. Кастомный скроллбар ---------- */
 *{scrollbar-width:thin;scrollbar-color:var(--line-3) transparent}
@@ -270,13 +285,16 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 input:hover:not(:focus),textarea:hover:not(:focus),select:hover:not(:focus){border-color:var(--line-3)}
 input:focus,textarea:focus,select:focus{
   outline:none;border-color:var(--accent);
-  box-shadow:var(--ring);background:var(--panel);
+  /* у полей рамка уже акцентная — даём один контрастный halo-ринг (без panel-gap),
+     чтобы фокус был заметен и на светлой теме, но не дублировал границу. */
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  background:var(--panel);
 }
 input:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed;background:var(--panel-2)}
-input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--err);box-shadow:0 0 0 3px var(--err-soft)}
+input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--err);box-shadow:0 0 0 3px color-mix(in srgb, var(--err) 25%, transparent)}
 textarea{resize:vertical;min-height:64px;line-height:1.5}
 select{
-  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a93a3' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23727c8c' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 11px center;
   padding-right:32px;cursor:pointer;
 }
@@ -538,6 +556,28 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeri
   .spinner{animation:spin 1s linear infinite!important}
   .empty .big{animation:none}
   .skeleton::after{animation:none;opacity:.4}
+  .bar > span{transition:none}
+}
+
+/* ---------- 18a. Размеры тач-целей ----------
+   WCAG 2.5.8 (AA): минимум 24×24px у любого таргета — гарантируем для самых
+   мелких контролов. На грубом указателе (тач) расширяем до комфортных ~44px,
+   не трогая плотную mouse-раскладку десктопа и заданную высоту 36px в .btn-row. */
+.btn,.btn.sm,.pill,.pill-tabs .pill,.tabs-underline .tab,.nav-item,
+.doc-loop-del{min-height:24px}
+.nav-item .ic,.t-count{min-width:20px}
+
+@media(pointer:coarse){
+  .btn{min-height:40px}
+  .btn.sm{min-height:36px}
+  .pill,.pill-tabs .pill{min-height:38px}
+  .tabs-underline .tab{min-height:42px}
+  .nav-item{min-height:42px}
+  /* мелкие иконочные кнопки — растягиваем до удобного нажатия */
+  .doc-loop-del{min-width:36px;min-height:36px}
+  input[type="checkbox"],input[type="radio"]{min-width:20px;min-height:20px}
+  /* сохранить контракт строки фильтров, но не ниже 40px на тач */
+  .btn-row select,.btn-row input{height:40px}
 }
 
 /* ---------- 18b. Модуль «Документы» ----------

@@ -23,6 +23,9 @@ SensorApp.registerIntegration({
 
   // База Sheets API v4.
   base: 'https://sheets.googleapis.com/v4/spreadsheets',
+  // Таймаут одиночного запроса и число повторов на сетевых/5xx/429 сбоях.
+  timeoutMs: 12000,
+  maxRetries: 2,
 
   /* ── Основной интерфейс ──────────────────────────────────────────────────
      method ∈ {'values','meta','append'}. params — см. шапку файла. */
@@ -148,24 +151,53 @@ SensorApp.registerIntegration({
       ? SensorApp.node.fetch
       : fetch;
 
-    let resp;
-    try {
-      resp = await doFetch(url, { method: verb, headers, body: body ? JSON.stringify(body) : undefined });
-    } catch (netErr){
-      throw new Error('Нет сети или запрос заблокирован браузером (CORS): ' + String(netErr && netErr.message || netErr));
-    }
+    const timeoutMs = this.timeoutMs || 12000;
+    const maxRetries = this.maxRetries != null ? this.maxRetries : 2;
+    // Повторяем только идемпотентные GET (повтор append мог бы задвоить строки).
+    const retryable = verb === 'GET';
 
-    if (resp.ok) return await resp.json().catch(()=> ({}));
+    let lastNetErr = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++){
+      let resp, ctl = _gsAbort(timeoutMs);
+      try {
+        resp = await doFetch(url, {
+          method: verb, headers,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: ctl.signal
+        });
+      } catch (netErr){
+        const timedOut = ctl.timedOut;
+        ctl.clear();
+        lastNetErr = netErr;
+        if (retryable && attempt < maxRetries){ await _gsSleep(_gsBackoff(attempt)); continue; }
+        if (timedOut){
+          throw new Error('Google Sheets не ответил за ' + Math.round(timeoutMs / 1000) +
+            ' с (таймаут). Повторите запрос или проверьте сеть.');
+        }
+        throw new Error('Нет сети или запрос заблокирован браузером (CORS): ' + String(netErr && netErr.message || netErr));
+      }
+      ctl.clear();
 
-    // Достаём текст ошибки Google: { error: { code, message, status } }
-    let apiMsg = '', apiStatus = '';
-    try {
-      const j = await resp.json();
-      if (j && j.error){ apiMsg = j.error.message || ''; apiStatus = j.error.status || ''; }
-    } catch (e){
-      try { apiMsg = (await resp.text() || '').slice(0, 200); } catch (e2){}
+      if (resp.ok) return await resp.json().catch(()=> ({}));
+
+      // 5xx/429 — временный сбой/лимит: повторяем GET с паузой.
+      if ((resp.status >= 500 || resp.status === 429) && retryable && attempt < maxRetries){
+        await _gsSleep(_gsBackoff(attempt, resp));
+        continue;
+      }
+
+      // Достаём текст ошибки Google: { error: { code, message, status } }
+      let apiMsg = '', apiStatus = '';
+      try {
+        const j = await resp.json();
+        if (j && j.error){ apiMsg = j.error.message || ''; apiStatus = j.error.status || ''; }
+      } catch (e){
+        try { apiMsg = (await resp.text() || '').slice(0, 200); } catch (e2){}
+      }
+      throw new Error(this._explain(resp.status, apiStatus, apiMsg, extra));
     }
-    throw new Error(this._explain(resp.status, apiStatus, apiMsg, extra));
+    throw new Error('Нет сети или запрос заблокирован браузером (CORS): ' +
+      String(lastNetErr && lastNetErr.message || lastNetErr || 'нет ответа от Google'));
   },
 
   /* Человекочитаемые сообщения по кодам ответа Google Sheets API. */
@@ -259,6 +291,24 @@ SensorApp.registerIntegration({
 
 /* encodeURIComponent для частей URL (id/range/qs-значений). */
 function enc(s){ return encodeURIComponent(String(s == null ? '' : s)); }
+
+/* AbortController с таймаутом для Google Sheets fetch. .clear() снимает таймер,
+   .timedOut — был ли отменён по таймауту (иначе — обычный сетевой сбой/CORS). */
+function _gsAbort(ms){
+  if (typeof AbortController === 'undefined') return { signal: undefined, timedOut: false, clear(){} };
+  const ctl = new AbortController();
+  const obj = { signal: ctl.signal, timedOut: false, clear(){ clearTimeout(timer); } };
+  const timer = setTimeout(() => { obj.timedOut = true; try { ctl.abort(); } catch(e){} }, ms);
+  return obj;
+}
+function _gsSleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+/* Экспоненциальная пауза; уважает Retry-After (сек), если Google его прислал. */
+function _gsBackoff(attempt, resp){
+  let ra = 0;
+  try { ra = Number(resp && resp.headers && resp.headers.get && resp.headers.get('Retry-After')); } catch(e){}
+  if (ra > 0) return Math.min(8000, ra * 1000);
+  return Math.min(4000, 400 * Math.pow(2, attempt));
+}
 
 /* Достаём имя листа из range вида "'РНП май'!A1:F200" / "РНП май!A1" / "A1:F200". */
 function sheetNameFromRange(range){

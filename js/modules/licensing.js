@@ -376,7 +376,7 @@ SensorApp.register({
       const v = collect();
       const fields = fieldsForForm();
       const filled = fields.filter(f => (v[f.key] || '').length).length;
-      const pct = Math.round(filled / fields.length * 100);
+      const pct = fields.length ? Math.round(filled / fields.length * 100) : 0;
       const reqMissing = fields.filter(f => f.req && !(v[f.key] || '').length).map(f => f.label.toLowerCase());
       completeEl.innerHTML =
         `<div style="display:flex;align-items:center;gap:10px">
@@ -464,7 +464,7 @@ SensorApp.register({
           note.style.display = '';
           if (res.mock || !res.ok){
             note.className = 'badge warn';
-            note.textContent = res.reason === 'web-blocked' ? 'демо · только desktop' : (res.note ? 'демо-данные' : 'демо-данные');
+            note.textContent = res.reason === 'web-blocked' ? 'демо · только desktop' : 'демо-данные';
             note.title = res.note || '';
           } else {
             note.className = 'badge ok'; note.textContent = 'данные DaData ✓'; note.title = '';
@@ -498,11 +498,15 @@ SensorApp.register({
     });
 
     function apply(d){
-      // d — плоский объект DaData: {name,inn,ogrn,kpp,address,manager,status}
-      const inn = String(d.inn || '');
-      // авто-переключение формы по длине ИНН
-      if (inn.length === 12 && state.form !== 'ИП') setForm('ИП');
-      else if (inn.length === 10 && state.form !== 'ООО') setForm('ООО');
+      // d — плоский объект DaData: {name,inn,ogrn,kpp,address,manager,status,type}
+      // авто-переключение формы: приоритет у явного признака type (ИП/ЮЛ),
+      // иначе — по числу ЦИФР ИНН (а не длине строки, чтобы пробелы/мусор не сбивали).
+      const innDigits = String(d.inn || '').replace(/\D/g, '');
+      const wantForm = (d.type === 'ИП' || d.type === 'INDIVIDUAL') ? 'ИП'
+                     : (d.type === 'ЮЛ' || d.type === 'LEGAL')      ? 'ООО'
+                     : innDigits.length === 12 ? 'ИП'
+                     : innDigits.length === 10 ? 'ООО' : null;
+      if (wantForm && state.form !== wantForm) setForm(wantForm);
       const map = { name:d.name, inn:d.inn, ogrn:d.ogrn, kpp:d.kpp, address:d.address, director:d.manager };
       Object.keys(map).forEach(k => { if (map[k] == null) delete map[k]; });
       setVals(map);

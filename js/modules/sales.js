@@ -812,7 +812,8 @@ SensorApp.register({
       bank.forEach(g=>{
         const hay = (g.cat+' '+g.responses.join(' ')).toLowerCase();
         let score=0; words.forEach(w=>{ if(hay.includes(w)) score++; });
-        if(g.cat.toLowerCase() && q.includes(g.cat.toLowerCase().split(/[ /]/)[0])) score+=2;
+        const catHead = (g.cat||'').toLowerCase().split(/[ /]/)[0];
+        if(catHead && q.includes(catHead)) score+=2; // непустой токен: q.includes('') иначе всегда true
         if(score>bestScore){ bestScore=score; best=g; }
       });
       // определяем продукт по упоминанию

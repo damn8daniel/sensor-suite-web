@@ -19,7 +19,7 @@ SensorApp.register({
     /* журнал проверок соединения: { [intId|'llm']: {ok:bool, detail:str, ts:ISO} }
        хранится локально, переживает перемонтирование — даёт «здоровье» интеграций
        с одного взгляда (когда последний раз проверяли и чем закончилось). */
-    function healthAll(){ const h = store.get('settings_health', null); return (h && typeof h === 'object') ? h : {}; }
+    function healthAll(){ const h = store.get('settings_health', null); return (h && typeof h === 'object' && !Array.isArray(h)) ? h : {}; }
     function healthGet(id){ return healthAll()[id] || null; }
     function healthSet(id, ok, detail){
       const h = healthAll();
@@ -46,7 +46,9 @@ SensorApp.register({
       if (!h) return '';
       const dot = h.ok ? '<span class="hc-dot hc-ok" aria-hidden="true"></span>' : '<span class="hc-dot hc-err" aria-hidden="true"></span>';
       const word = h.ok ? 'соединение есть' : 'ошибка';
-      return `<p class="health-line" data-health="${esc(id)}">${dot}<span>Проверено ${esc(ago(h.ts))} · ${esc(word)}</span></p>`;
+      const when = ago(h.ts);
+      const label = when ? `Проверено ${when} · ${word}` : `Проверено · ${word}`;
+      return `<p class="health-line" data-health="${esc(id)}">${dot}<span>${esc(label)}</span></p>`;
     }
 
     /* ─────────────────────────── справочники ─────────────────────────── */
@@ -652,7 +654,7 @@ SensorApp.register({
             const j = await res.json().catch(()=>null);
             const list = (j && (j.data || j.models)) || [];
             const n = Array.isArray(list) ? list.length : 0;
-            const hasModel = cfg.model && Array.isArray(list) && list.some(m => (m.id || m.name) === cfg.model);
+            const hasModel = cfg.model && Array.isArray(list) && list.some(m => m && (typeof m === 'object') && (m.id || m.name) === cfg.model);
             const detail = (n ? `моделей: ${n}` : 'ответ получен')
               + (cfg.model ? ` · «${cfg.model}» ${hasModel ? 'доступна' : 'не в списке'}` : '')
               + ` · ${ms} мс`;
@@ -706,22 +708,28 @@ SensorApp.register({
           let parsed;
           try { parsed = JSON.parse(rd.result); }
           catch(err){ ctx.toast('Файл не является корректным JSON', 'err'); imp.value=''; return; }
-          const incoming = (parsed && parsed.settings && typeof parsed.settings === 'object')
+          // только обычный объект-словарь настроек (не массив, не примитив):
+          // массив дал бы числовые «ключи» в store, примитив — мусор.
+          const isPlainObj = v => v && typeof v === 'object' && !Array.isArray(v);
+          const incoming = isPlainObj(parsed && parsed.settings)
             ? parsed.settings
-            : (parsed && typeof parsed === 'object' ? parsed : null);
+            : (isPlainObj(parsed) ? parsed : null);
           if (!incoming){ ctx.toast('В файле нет настроек', 'err'); imp.value=''; return; }
-          const credCount = incoming.creds ? Object.keys(incoming.creds).length : 0;
+          // тема из файла — только из белого списка, иначе игнорируем
+          const importTheme = (incoming.theme === 'dark' || incoming.theme === 'light') ? incoming.theme : null;
+          const credCount = isPlainObj(incoming.creds) ? Object.keys(incoming.creds).length : 0;
           const yes = await ui.confirm({
             title: 'Импорт настроек',
             message: 'Заменить текущие настройки данными из файла?',
-            detail: `Будет загружено: ключей интеграций — ${credCount}` + (incoming.theme ? `, тема — ${incoming.theme === 'dark' ? 'тёмная' : 'светлая'}` : '') + '. Текущие настройки будут перезаписаны.',
+            detail: `Будет загружено: ключей интеграций — ${credCount}` + (importTheme ? `, тема — ${importTheme === 'dark' ? 'тёмная' : 'светлая'}` : '') + '. Текущие настройки будут перезаписаны.',
             danger: true, ok: 'Импортировать'
           });
           imp.value = '';
           if (!yes) return;
-          // переносим ключи верхнего уровня в store (контракт: set per-key)
-          Object.keys(incoming).forEach(k => store.set(k, incoming[k]));
-          if (incoming.theme){ document.documentElement.setAttribute('data-theme', incoming.theme); }
+          // переносим ключи верхнего уровня в store (контракт: set per-key);
+          // тему нормализуем, чтобы в data-theme/store не попало произвольное значение
+          Object.keys(incoming).forEach(k => store.set(k, k === 'theme' ? (importTheme || 'light') : incoming[k]));
+          if (importTheme){ document.documentElement.setAttribute('data-theme', importTheme); }
           ctx.toast('Настройки импортированы ✓', 'ok');
           if (ctx.app && ctx.app.refreshDemoBadge) ctx.app.refreshDemoBadge();
           remount(); // перерисовать с новыми данными store
