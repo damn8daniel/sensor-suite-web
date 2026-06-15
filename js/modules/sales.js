@@ -155,7 +155,9 @@ SensorApp.register({
     { id:'ai',         title:'AI-ассистент продавца',      hint:'Подсказка ответа по ситуации',       keywords:['ai','ассистент','llm','подсказка'],
       run:(ctx)=>salesGoTab(ctx,'ai') },
     { id:'b7',         title:'Проверка специалиста (B7)',   hint:'Проходит ли спец под МЧС / АТТПР',    keywords:['специалист','b7','стаж','образование','нок'],
-      run:(ctx)=>salesGoTab(ctx,'b7') }
+      run:(ctx)=>salesGoTab(ctx,'b7') },
+    { id:'qc',         title:'Контроль звонков',            hint:'Оценка звонка по рубрике (LLM или мок)', keywords:['звонок','контроль','оценка','транскрипт','скоринг','качество','рубрика'],
+      run:(ctx)=>salesGoTab(ctx,'qc') }
   ],
   mount(root, ctx){
     const U = ctx.ui, esc = U.escape;
@@ -223,14 +225,16 @@ SensorApp.register({
       scripts:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
       objections:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
       ai:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.8L18.6 9l-4.7 1.9L12 16l-1.9-5.1L5.4 9l4.7-1.2z"/><path d="M19 14l.9 2.3L22 17l-2.1.8L19 20l-.9-2.2L16 17l2.1-.7z"/></svg>',
-      b7:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>'
+      b7:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>',
+      qc:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>'
     };
 
     const TABS = [
       { id:'scripts',    label:'Скрипты',     ic:IC.scripts },
       { id:'objections', label:'Возражения',  ic:IC.objections },
       { id:'ai',         label:'AI-ассистент',ic:IC.ai },
-      { id:'b7',         label:'Проверка специалиста', ic:IC.b7 }
+      { id:'b7',         label:'Проверка специалиста', ic:IC.b7 },
+      { id:'qc',         label:'Контроль звонков', ic:IC.qc }
     ];
     let active = ctx.store.get('sales_tab','scripts');
     if(!TABS.some(t=>t.id===active)) active = 'scripts';
@@ -268,6 +272,7 @@ SensorApp.register({
       if(active==='objections') return renderObjections();
       if(active==='ai')         return renderAI();
       if(active==='b7')         return renderB7();
+      if(active==='qc')         return renderQC();
     }
 
     /* =====================================================================
@@ -669,21 +674,215 @@ SensorApp.register({
       'Как подвести к оплате АТТПР сегодня (приём дожима)?'
     ];
 
+    /* =====================================================================
+       RAG-ретривал по window.RAG_INDEX.chunks
+       Стратегия:
+        (а) если задан LLM-эндпоинт с эмбеддингами (llm.embEndpoint или
+            /v1/embeddings от базового endpoint) — эмбеддинг запроса → косинус
+            по int8-эмбеддингам чанков (деквантуем emb*meta.quant.scale).
+        (б) иначе — лексический BM25 по text чанков (реализован ниже на JS).
+       Топ-K (4–6) чанков → если есть LLM /chat — генерим ответ СТРОГО по
+       найденным фрагментам с указанием источников; иначе — показываем сами
+       фрагменты («из материалов: …»). Всегда есть блок «Источники».
+       Если индекс пуст — крайний фолбэк на mockAnswer() (банк возражений).
+       ===================================================================== */
+    const TOP_K = 5;
+
+    function ragIndex(){
+      const R = window.RAG_INDEX;
+      if(R && Array.isArray(R.chunks) && R.chunks.length) return R;
+      return null;
+    }
+    function ragScale(R){
+      const q = R && R.meta && R.meta.quant;
+      return (q && isFinite(q.scale) && q.scale>0) ? q.scale : 1;
+    }
+
+    // конфиг эмбеддингов: embEndpoint из кредов или вывод из базового endpoint
+    function embConfig(){
+      const llm = ctx.store.creds('llm') || {};
+      const key = (llm.apiKey || llm.key || '').trim();
+      const explicit = (llm.embEndpoint || llm.embeddingEndpoint || '').trim();
+      const base = (llm.endpoint||'').trim() || (ctx.env==='desktop' ? 'http://localhost:1234/v1' : '');
+      let url = explicit;
+      if(!url && base){
+        const b = base.replace(/\/+$/,'');
+        url = /\/embeddings$/.test(b) ? b : b + '/embeddings';
+      }
+      const model = (llm.embModel || llm.embeddingModel || '').trim();
+      const R = ragIndex();
+      // эмбеддинг-режим доступен, только если есть и индекс, и куда слать запрос
+      const ready = !!(R && url && (key || ctx.env==='desktop'));
+      return { url, key, model, ready };
+    }
+
+    // --- математика косинуса по int8-эмбеддингам (нормированы → cos = dot) ---
+    function dotInt8(emb, scale, qvec){
+      // emb — int8-массив чанка; qvec — НОРМИРОВАННЫЙ float-вектор запроса.
+      let s = 0; const n = Math.min(emb.length, qvec.length);
+      for(let i=0;i<n;i++) s += emb[i]*scale*qvec[i];
+      return s;
+    }
+    function normalizeVec(v){
+      let n = 0; for(let i=0;i<v.length;i++) n += v[i]*v[i];
+      n = Math.sqrt(n) || 1;
+      const out = new Array(v.length);
+      for(let i=0;i<v.length;i++) out[i] = v[i]/n;
+      return out;
+    }
+
+    // запрос эмбеддинга к OpenAI-совместимому /embeddings
+    async function embedQuery(text, ec){
+      const headers = { 'Content-Type':'application/json' };
+      if(ec.key) headers['Authorization'] = 'Bearer ' + ec.key;
+      const payload = { input: text };
+      if(ec.model) payload.model = ec.model;
+      const ac = (typeof AbortController!=='undefined') ? new AbortController() : null;
+      const tid = ac ? setTimeout(()=>ac.abort(), 30000) : null;
+      let res;
+      try {
+        res = await fetch(ec.url, { method:'POST', headers, body: JSON.stringify(payload), signal: ac?ac.signal:undefined });
+      } catch(e){
+        if(e && e.name==='AbortError') throw new Error('таймаут эмбеддинга (30 с)');
+        throw new Error('эмбеддинг-эндпоинт недоступен ('+(e&&e.message||e)+')');
+      } finally { if(tid) clearTimeout(tid); }
+      if(!res.ok){
+        let detail=''; try{ const j=await res.json(); detail=(j.error&&j.error.message)||''; }catch(_){}
+        throw new Error('HTTP '+res.status+(detail?' · '+detail:''));
+      }
+      const data = await res.json();
+      const v = data && data.data && data.data[0] && data.data[0].embedding;
+      if(!Array.isArray(v) || !v.length) throw new Error('пустой эмбеддинг от модели');
+      return v.map(Number);
+    }
+
+    // эмбеддинг-ретривал: топ-K чанков по косинусу
+    async function retrieveByEmbedding(question, ec){
+      const R = ragIndex();
+      const scale = ragScale(R);
+      const raw = await embedQuery(question, ec);
+      const dim = (R.meta && R.meta.dim) || raw.length;
+      if(raw.length !== dim) throw new Error('размерность эмбеддинга '+raw.length+' ≠ индекс '+dim);
+      const q = normalizeVec(raw);
+      return R.chunks
+        .map(c=>({ chunk:c, score: dotInt8(c.emb||[], scale, q) }))
+        .sort((a,b)=>b.score-a.score)
+        .slice(0, TOP_K);
+    }
+
+    // --- BM25 / лексический ретривал по text чанков (без ключей) ---
+    function ragTokenize(s){
+      return String(s||'').toLowerCase().match(/[a-zа-яё0-9]+/gi) || [];
+    }
+    // лёгкий стеммер: режем русские/латинские окончания для устойчивости поиска
+    function ragStem(w){
+      if(w.length<=4) return w;
+      return w.replace(/(ами|ями|ого|его|ому|ему|ыми|ими|ует|уют|ать|ять|ишь|ете|ёте|ия|ие|ый|ой|ей|ом|ем|ам|ям|ах|ях|ов|ев|ми|ть|ся|и|ы|а|я|о|е|у|ю|й|ь|s|es|ed|ing)$/i, '') || w;
+    }
+    let _bm25 = null;
+    function buildBM25(){
+      if(_bm25) return _bm25;
+      const R = ragIndex();
+      const docs = R.chunks.map(c=>{
+        const toks = ragTokenize((c.title?c.title+' ':'')+c.text).map(ragStem);
+        const tf = Object.create(null);
+        toks.forEach(t=>{ tf[t]=(tf[t]||0)+1; });
+        return { tf, len: toks.length };
+      });
+      const N = docs.length;
+      const df = Object.create(null);
+      docs.forEach(d=>{ Object.keys(d.tf).forEach(t=>{ df[t]=(df[t]||0)+1; }); });
+      const avgdl = docs.reduce((a,d)=>a+d.len,0)/(N||1) || 1;
+      const idf = Object.create(null);
+      Object.keys(df).forEach(t=>{ idf[t] = Math.log(1 + (N - df[t] + 0.5)/(df[t] + 0.5)); });
+      _bm25 = { docs, idf, avgdl, k1:1.5, b:0.75 };
+      return _bm25;
+    }
+    function retrieveByBM25(question){
+      const R = ragIndex();
+      const m = buildBM25();
+      const qTerms = ragTokenize(question).map(ragStem).filter(w=>w.length>=2);
+      const uniq = [...new Set(qTerms)];
+      const scored = m.docs.map((d,i)=>{
+        let s = 0;
+        uniq.forEach(t=>{
+          const f = d.tf[t]; if(!f) return;
+          const idf = m.idf[t] || 0;
+          s += idf * (f*(m.k1+1)) / (f + m.k1*(1 - m.b + m.b*d.len/m.avgdl));
+        });
+        return { chunk: R.chunks[i], score: s };
+      });
+      return scored.filter(r=>r.score>0).sort((a,b)=>b.score-a.score).slice(0, TOP_K);
+    }
+
+    // строка контекста для LLM из найденных чанков (с нумерацией источников)
+    function ragContext(hits){
+      return hits.map((h,i)=>{
+        const c = h.chunk;
+        const src = [c.source, c.title].filter(Boolean).join(' · ') || ('фрагмент '+(i+1));
+        return '['+(i+1)+'] '+src+'\n'+String(c.text||'').trim();
+      }).join('\n\n');
+    }
+    // компактный заголовок источника
+    function ragSourceLabel(c, i){
+      return esc([c.source, c.title].filter(Boolean).join(' · ') || ('фрагмент '+(i+1)));
+    }
+
+    // блок «Источники» (всегда показываем под ответом)
+    function sourcesHTML(hits){
+      if(!hits || !hits.length) return '';
+      const items = hits.map((h,i)=>{
+        const c = h.chunk;
+        const sc = isFinite(h.score) ? h.score : null;
+        return `<li style="margin:4px 0;line-height:1.5">
+                  <span class="mono" style="color:var(--accent);font-weight:650;margin-right:4px">[${i+1}]</span>
+                  <span style="color:var(--ink-2)">${ragSourceLabel(c,i)}</span>
+                  ${sc!=null?`<span class="muted" style="font-size:11px;margin-left:6px;font-variant-numeric:tabular-nums">${sc.toFixed(3)}</span>`:''}
+                </li>`;
+      }).join('');
+      return `<div style="margin-top:14px">
+                <div style="font-weight:600;margin-bottom:6px;font-size:13px">Источники</div>
+                <ul style="margin:0;padding-left:4px;list-style:none">${items}</ul>
+              </div>`;
+    }
+
+    // фрагменты как ответ, когда нет /chat («из материалов: …»)
+    function fragmentsAnswerHTML(hits){
+      const blocks = hits.map((h,i)=>{
+        const c = h.chunk;
+        const txt = String(c.text||'').trim();
+        const short = txt.length>700 ? txt.slice(0,700).trim()+'…' : txt;
+        return `<div style="margin-bottom:12px;padding:10px 13px;border:1px solid var(--line);border-radius:var(--radius-s);background:var(--panel-2)">
+                  <div class="muted" style="font-size:11.5px;margin-bottom:5px">
+                    <span class="mono" style="color:var(--accent);font-weight:650">[${i+1}]</span> ${ragSourceLabel(c,i)}
+                  </div>
+                  <div style="white-space:pre-wrap;line-height:1.55;color:var(--ink-2)">${esc(short)}</div>
+                </div>`;
+      }).join('');
+      return `<div class="ai-answer-frag">
+                <p style="margin:0 0 10px;color:var(--ink-2)">Из обучающих материалов Sensor по вашему запросу:</p>
+                ${blocks}
+              </div>`;
+    }
+
     function renderAI(){
       const cfg = llmConfig();
-      const statusBadge = cfg.ready
-        ? `<span class="badge ok dot">LLM подключён${cfg.model?' · '+esc(cfg.model):''}</span>`
-        : `<span class="badge warn dot">нет ключей — мок-ответ из банка знаний</span>`;
-      const epLabel = cfg.endpoint
-        ? esc(cfg.endpoint)
-        : '— не задан (Настройки → AI-ассистент)';
+      const R = ragIndex();
+      const ec = embConfig();
+      const retrievalMode = ec.ready ? 'embeddings' : (R ? 'bm25' : 'none');
+      const idxBadge = R
+        ? `<span class="badge ${retrievalMode==='embeddings'?'ok':'info'} dot">RAG · ${R.chunks.length} фрагмент${plural(R.chunks.length,'','а','ов')} · ${retrievalMode==='embeddings'?'эмбеддинги':'BM25'}</span>`
+        : `<span class="badge warn dot">индекс пуст — мок из банка знаний</span>`;
+      const chatBadge = cfg.ready
+        ? `<span class="badge ok dot">ответ генерит LLM${cfg.model?' · '+esc(cfg.model):''}</span>`
+        : `<span class="badge" title="Подключите LLM в Настройках для генерации связного ответа">ответ = найденные фрагменты</span>`;
 
       body.innerHTML =
-        U.card('AI-ассистент продавца',
-          'Опишите ситуацию или возражение клиента — ассистент подскажет ответ на основе скриптов, банка возражений и карточек продуктов Sensor.',
-          `<div class="btn-row" style="margin-bottom:12px">${statusBadge}
-             <span class="badge" title="OpenAI-совместимый /v1/chat/completions">эндпоинт: ${epLabel}</span>
-             ${!cfg.ready ? `<button class="btn ghost sm" id="ai-cfg" style="margin-left:auto">Настроить ключи →</button>`:''}
+        U.card('AI-ассистент продавца (RAG)',
+          'Опишите ситуацию или возражение — ассистент найдёт релевантные фрагменты в обучающих материалах Sensor (конспект продуктов, чек-листы, банк возражений) и' +
+          (cfg.ready?' сформулирует ответ строго по ним с указанием источников.':' покажет их как ответ с указанием источников. Подключите LLM в Настройках для связного ответа.'),
+          `<div class="btn-row" style="margin-bottom:12px;flex-wrap:wrap">${idxBadge}${chatBadge}
+             ${(!cfg.ready) ? `<button class="btn ghost sm" id="ai-cfg" style="margin-left:auto">Настроить LLM →</button>`:''}
            </div>` +
           U.field('Вопрос / реплика клиента',
             `<textarea id="ai-q" rows="4" placeholder="Напр.: Клиент говорит «дорого, у конкурентов дешевле» — что ответить по лицензии МЧС?"></textarea>`) +
@@ -709,23 +908,69 @@ SensorApp.register({
         const question = (qEl.value||'').trim();
         if(!question){ ctx.toast('Введите вопрос','err'); qEl.focus(); return; }
         const btn = body.querySelector('#ai-ask');
-        btn.disabled = true; btn.innerHTML = U.spinner + ' Думаю…';
-        out.innerHTML = U.card('Ответ ассистента', cfg.ready?'обращение к LLM…':'сбор из банка знаний…', U.skeleton({lines:4}));
+        btn.disabled = true; btn.innerHTML = U.spinner + ' Ищу…';
+        out.innerHTML = U.card('Ответ ассистента', 'ретривал по материалам…', U.skeleton({lines:4}));
+
+        // крайний фолбэк: индекс пуст → старый мок из банка знаний
+        if(!ragIndex()){
+          out.innerHTML = answerCard('Ответ ассистента', 'мок · банк возражений и продуктов Sensor (индекс знаний пуст)', mockAnswer(question));
+          btn.disabled = false; btn.innerHTML = '✦ Спросить ассистента';
+          return;
+        }
+
         try{
-          let answer, source;
-          if(cfg.ready){
-            answer = await callLLM(question, cfg);
-            source = 'LLM' + (cfg.model?' · '+cfg.model:'');
+          // 1. ретривал: эмбеддинги (если настроены) → иначе BM25
+          let hits, retrievalNote;
+          if(ec.ready){
+            try{
+              hits = await retrieveByEmbedding(question, ec);
+              retrievalNote = 'ретривал по эмбеддингам';
+            }catch(embErr){
+              hits = retrieveByBM25(question);
+              retrievalNote = 'BM25 (эмбеддинг недоступен: '+(embErr.message||String(embErr))+')';
+              ctx.toast('Эмбеддинг-эндпоинт недоступен — лексический поиск','err');
+            }
           } else {
-            answer = mockAnswer(question);
-            source = 'мок · банк возражений и продуктов Sensor';
+            hits = retrieveByBM25(question);
+            retrievalNote = 'лексический BM25';
           }
-          out.innerHTML = answerCard('Ответ ассистента', source, answer);
+
+          // ничего не нашли в индексе → крайний фолбэк на банк знаний
+          if(!hits || !hits.length){
+            out.innerHTML = answerCard('Ответ ассистента',
+              'в индексе нет релевантных фрагментов · '+retrievalNote+' — показан мок из банка знаний', mockAnswer(question));
+            btn.disabled = false; btn.innerHTML = '✦ Спросить ассистента';
+            return;
+          }
+
+          // 2. ответ: LLM /chat по найденным фрагментам, иначе сами фрагменты
+          if(cfg.ready){
+            btn.innerHTML = U.spinner + ' Формулирую…';
+            try{
+              const answer = await callLLMRag(question, hits, cfg);
+              out.innerHTML = answerCard('Ответ ассистента',
+                'LLM по найденным фрагментам' + (cfg.model?' · '+cfg.model:'') + ' · ' + retrievalNote,
+                answer) + sourcesHTML(hits);
+            }catch(chatErr){
+              // LLM не ответил → показываем фрагменты как ответ
+              out.innerHTML = U.card('Ответ ассистента (фрагменты)',
+                'LLM недоступен: '+esc(chatErr.message||String(chatErr))+' · показаны найденные фрагменты · '+esc(retrievalNote),
+                fragmentsAnswerHTML(hits) +
+                `<div class="btn-row" style="margin-top:12px"><button class="btn sm" data-ai-copy>Скопировать</button></div>`)
+                + sourcesHTML(hits);
+              ctx.toast('LLM не ответил — показаны фрагменты','err');
+            }
+          } else {
+            out.innerHTML = U.card('Ответ ассистента (из материалов)', retrievalNote,
+              fragmentsAnswerHTML(hits) +
+              `<div class="btn-row" style="margin-top:12px"><button class="btn sm" data-ai-copy>Скопировать</button></div>`)
+              + sourcesHTML(hits);
+          }
         }catch(err){
-          const fallback = mockAnswer(question);
+          // непредвиденная ошибка ретривала → крайний мок
           out.innerHTML = answerCard('Ответ ассистента (запасной)',
-            'LLM недоступен: '+esc(err.message||String(err))+' · показан мок', fallback);
-          ctx.toast('LLM не ответил — показан мок','err');
+            'ошибка ретривала: '+esc(err.message||String(err))+' · показан мок', mockAnswer(question));
+          ctx.toast('Ошибка ретривала — показан мок','err');
         }finally{
           btn.disabled = false; btn.innerHTML = '✦ Спросить ассистента';
         }
@@ -743,9 +988,56 @@ SensorApp.register({
     body.addEventListener('click', e=>{
       const c = e.target.closest && e.target.closest('[data-ai-copy]');
       if(!c) return;
-      const block = c.closest('.card'); const txt = block && block.querySelector('.ai-answer');
+      const block = c.closest('.card'); const txt = block && block.querySelector('.ai-answer, .ai-answer-frag');
       if(txt) U.copy(txt.textContent, 'Ответ скопирован ✓');
     });
+
+    /* RAG-генерация: ответ СТРОГО по найденным фрагментам, со ссылками [n]. */
+    const RAG_SYSTEM_PROMPT =
+      'Ты — наставник отдела продаж компании Sensor (Сенсор Лицензирование): B2B-помощь в получении лицензии МЧС ' +
+      '(монтаж/ТО/ремонт систем пожарной безопасности) и аттестации проектировщика (АТТПР). ' +
+      'Отвечай на русском, кратко и по делу, ТОЛЬКО на основе приведённых ниже фрагментов материалов (КОНТЕКСТ). ' +
+      'Не придумывай факты, которых нет в КОНТЕКСТЕ. Если в КОНТЕКСТЕ нет ответа — честно скажи об этом и предложи, что уточнить. ' +
+      'Ссылайся на источники номерами в квадратных скобках [1], [2] сразу после утверждения. ' +
+      'Где уместно — давай речевую формулировку для звонка и применяй технику отработки возражений: ' +
+      'Присоединение → Вопрос на раскрытие → Аргументация → Закрывающий вопрос. Никогда не спрашивай «над чем подумать».';
+
+    async function callLLMRag(question, hits, cfg){
+      const url = cfg.endpoint.replace(/\/+$/,'') + '/chat/completions';
+      const headers = { 'Content-Type':'application/json' };
+      if(cfg.key) headers['Authorization'] = 'Bearer ' + cfg.key;
+      const userMsg =
+        'КОНТЕКСТ (фрагменты материалов Sensor, нумерованы):\n' + ragContext(hits) +
+        '\n\nВОПРОС МЕНЕДЖЕРА:\n' + question +
+        '\n\nОтветь строго по КОНТЕКСТУ выше, со ссылками [n] на использованные фрагменты.';
+      const payload = {
+        model: cfg.model || 'local-model',
+        temperature: 0.3,
+        max_tokens: 700,
+        messages: [
+          { role:'system', content: RAG_SYSTEM_PROMPT },
+          { role:'user',   content: userMsg }
+        ]
+      };
+      const ac = (typeof AbortController!=='undefined') ? new AbortController() : null;
+      const tid = ac ? setTimeout(()=>ac.abort(), 45000) : null;
+      let res;
+      try {
+        res = await fetch(url, { method:'POST', headers, body: JSON.stringify(payload), signal: ac?ac.signal:undefined });
+      } catch(e){
+        if(e && e.name==='AbortError') throw new Error('таймаут запроса (45 с)');
+        throw new Error('сеть недоступна ('+(e&&e.message||e)+')');
+      } finally { if(tid) clearTimeout(tid); }
+      if(!res.ok){
+        let detail=''; try{ const j=await res.json(); detail = (j.error&&j.error.message)||''; }catch(_){}
+        throw new Error('HTTP '+res.status+(detail?' · '+detail:''));
+      }
+      const data = await res.json();
+      const txt = data && data.choices && data.choices[0] && (
+        (data.choices[0].message && data.choices[0].message.content) || data.choices[0].text);
+      if(!txt) throw new Error('пустой ответ модели');
+      return String(txt).trim();
+    }
 
     const SYSTEM_PROMPT =
       'Ты — опытный наставник отдела продаж компании Sensor (Сенсор Лицензирование), B2B-помощь в получении ' +
@@ -1062,6 +1354,415 @@ SensorApp.register({
           : 'НОК проводит аккредитованный центр оценки квалификации (ЦОК). Допуск и содержание экзамена определяет профстандарт; результат вносится в реестр сведений о проведении НОК.';
 
       return { status, subtitle, reasons, next, note };
+    }
+
+    /* =====================================================================
+       Вкладка «Контроль звонков» — скоринг транскрипта по рубрике
+       Поток: вставить транскрипт ИЛИ выбрать пример из window.CALL_EXAMPLES →
+       «Оценить звонок» → если задан LLM-эндпоинт (ctx.store.creds('llm')) —
+       отправляем транскрипт + рубрику и получаем оценку по этапам; иначе
+       эвристический мок-скоринг по ключевым признакам checks. Работает и без
+       ключей, и при отсутствии глобальных данных (мини-фолбэк ниже).
+       ===================================================================== */
+
+    // рубрика: реальная из window.CALL_RUBRIC, иначе компактный фолбэк
+    function qcRubric(){
+      const R = window.CALL_RUBRIC;
+      if(R && Array.isArray(R.stages) && R.stages.length) return R;
+      return {
+        stages: [
+          { id:'contact', name:'Установление контакта', weight:20, checks:[
+            { id:'c_greet', text:'Поздоровался и представился (имя + компания)', hint:'Позитивный тон, «улыбка» в голосе.' },
+            { id:'c_name',  text:'Узнал, как обращаться к клиенту', hint:'Зафиксировал имя.' } ] },
+          { id:'qual', name:'Выявление потребности', weight:25, checks:[
+            { id:'q_goal', text:'Выяснил цель обращения', hint:'Для чего нужна лицензия/аттестация.' },
+            { id:'q_term', text:'Уточнил срочность / сроки', hint:'К какому сроку нужен результат.' } ] },
+          { id:'present', name:'Презентация и стоимость', weight:30, checks:[
+            { id:'p_price', text:'Чётко озвучил стоимость', hint:'Без «вилок».' },
+            { id:'p_term',  text:'Назвал срок и привязал к дате', hint:'«К … числу будет готово».' } ] },
+          { id:'close', name:'Закрытие и возражения', weight:25, checks:[
+            { id:'cl_q',   text:'Задал закрывающий вопрос', hint:'«Когда готовы начать?»' },
+            { id:'cl_obj', text:'Отработал возражение по технике', hint:'Присоединение → вопрос → аргумент → закрытие.' } ] }
+        ],
+        scale: { verdicts:[
+          { id:'fail', label:'Слабый звонок', min:0, color:'err' },
+          { id:'ok', label:'Рабочий звонок', min:50, color:'warn' },
+          { id:'strong', label:'Сильный звонок', min:70, color:'info' },
+          { id:'ref', label:'Эталонный звонок', min:88, color:'ok' } ] },
+        tips:{}
+      };
+    }
+
+    // примеры: реальные из window.CALL_EXAMPLES, иначе один встроенный
+    function qcExamples(){
+      const E = window.CALL_EXAMPLES;
+      if(Array.isArray(E) && E.length) return E;
+      return [{
+        id:'demo', product:'МЧС', manager:'Демо', date:'—',
+        note:'Встроенный образец (реальные звонки не загружены)',
+        transcript:'Добрый день! Меня зовут Андрей, компания Сенсор Лицензирование. Подскажите, как могу к вам обращаться? '+
+          'Иван, я задам пару вопросов, сформируем предложение под вас, хорошо? Для чего планируете лицензию МЧС? '+
+          'Понял, чтобы участвовать в тендерах. К какому сроку нужен результат? Хорошо, до 15 рабочих дней — запустим завтра, '+
+          'к 20-му числу всё будет готово. Стоимость помощи составит … рублей плюс госпошлина 7500 рублей при подаче. '+
+          'Когда готовы начать работу? Если «дорого» — понимаю, давайте сравним не только цену: с кем сравниваете? '+
+          'Жду карточку компании и документы, завтра наберу в первой половине дня.'
+      }];
+    }
+
+    // нормализация весов: если Σweight ≠ 100, считаем балл от суммы весов
+    function qcWeightSum(R){ return R.stages.reduce((a,st)=>a+(+st.weight||0),0) || R.stages.length; }
+
+    function qcVerdict(R, score){
+      const list = (R.scale && R.scale.verdicts) || [];
+      let best = null;
+      list.forEach(v=>{ if(score>= (v.min||0)){ if(!best || (v.min||0)>=(best.min||0)) best=v; } });
+      return best || { label:'—', color:'' };
+    }
+
+    let qcLastInput = ctx.store.get('sales_qc_text','') || '';
+    let qcSelExample = '';
+
+    function renderQC(){
+      const R = qcRubric();
+      const examples = qcExamples();
+      const cfg = llmConfig();
+      const modeBadge = cfg.ready
+        ? `<span class="badge ok dot">LLM подключён${cfg.model?' · '+esc(cfg.model):''} — оценка моделью</span>`
+        : `<span class="badge warn dot">нет ключей — эвристический мок-скоринг</span>`;
+
+      const exOpts = ['<option value="">— выбрать пример звонка —</option>']
+        .concat(examples.map((e,i)=>{
+          const lbl = [e.product, e.manager, e.date].filter(Boolean).join(' · ') + (e.note?(' — '+e.note):'');
+          return `<option value="${i}">${esc(lbl.length>72?lbl.slice(0,70)+'…':lbl)}</option>`;
+        })).join('');
+
+      body.innerHTML =
+        U.card('Контроль звонков',
+          'Вставьте транскрипт звонка или выберите образец, затем оцените его по рубрике этапов воронки. '+
+          (cfg.ready?'Оценку выставит подключённая модель.':'Без ключей работает эвристический скоринг по ключевым признакам. ')+
+          'Ничего не сохраняется на сервере.',
+          `<div class="btn-row" style="margin-bottom:12px">${modeBadge}
+             <span class="badge" title="Рубрика контроля качества">${esc(R.stages.length)} этап${plural(R.stages.length,'','а','ов')} · вес Σ${qcWeightSum(R)}</span>
+             ${!cfg.ready ? `<button class="btn ghost sm" id="qc-cfg" style="margin-left:auto">Настроить LLM →</button>`:''}
+           </div>` +
+          U.field('Образец звонка (необязательно)',
+            `<select id="qc-example">${exOpts}</select>`) +
+          U.field('Транскрипт звонка',
+            `<textarea id="qc-text" rows="9" placeholder="Вставьте текст транскрипта звонка сюда…">${esc(qcLastInput)}</textarea>`) +
+          `<div class="btn-row">
+             <button class="btn primary" id="qc-run">✦ Оценить звонок</button>
+             <button class="btn" id="qc-clear">Очистить</button>
+           </div>
+           <div id="qc-out" style="margin-top:14px"></div>`);
+
+      const sel = body.querySelector('#qc-example');
+      const ta = body.querySelector('#qc-text');
+      const out = body.querySelector('#qc-out');
+      const cfgBtn = body.querySelector('#qc-cfg');
+      if(cfgBtn) cfgBtn.onclick = ()=>ctx.go && ctx.go('settings');
+      if(qcSelExample) sel.value = qcSelExample;
+
+      sel.onchange = ()=>{
+        qcSelExample = sel.value;
+        if(sel.value==='') return;
+        const ex = examples[+sel.value];
+        if(ex && ex.transcript){ ta.value = ex.transcript; qcLastInput = ex.transcript; ctx.store.set('sales_qc_text', qcLastInput); }
+      };
+      ta.addEventListener('input', ()=>{ qcLastInput = ta.value; ctx.store.set('sales_qc_text', qcLastInput); });
+      body.querySelector('#qc-clear').onclick = ()=>{ ta.value=''; qcLastInput=''; qcSelExample=''; sel.value=''; ctx.store.set('sales_qc_text',''); out.innerHTML=''; ta.focus(); };
+      body.querySelector('#qc-run').onclick = ()=>scoreCall();
+
+      async function scoreCall(){
+        const text = (ta.value||'').trim();
+        if(text.length<20){ ctx.toast('Вставьте транскрипт звонка (минимум пара фраз)','err'); ta.focus(); return; }
+        const btn = body.querySelector('#qc-run');
+        btn.disabled = true; btn.innerHTML = U.spinner + ' Оцениваю…';
+        out.innerHTML = U.card('Оценка звонка', cfg.ready?'обращение к LLM…':'эвристический скоринг…', U.skeleton({lines:5}));
+        try{
+          let result, source;
+          if(cfg.ready){
+            try{
+              result = await scoreViaLLM(text, R, cfg);
+              source = 'LLM' + (cfg.model?' · '+cfg.model:'');
+            }catch(err){
+              result = scoreHeuristic(text, R);
+              source = 'мок (LLM недоступен: '+(err.message||String(err))+')';
+              ctx.toast('LLM не ответил — показан эвристический скоринг','err');
+            }
+          } else {
+            result = scoreHeuristic(text, R);
+            source = 'эвристический скоринг по ключевым признакам';
+          }
+          out.innerHTML = qcResultHTML(R, result, source);
+          bindQCResult(out, R, text);
+        }catch(err){
+          out.innerHTML = U.card('Ошибка оценки', '', `<p class="hint">${esc(err.message||String(err))}</p>`);
+        }finally{
+          btn.disabled = false; btn.innerHTML = '✦ Оценить звонок';
+        }
+      }
+    }
+
+    function bindQCResult(out, R, text){
+      const cp = out.querySelector('[data-qc-copy]');
+      if(cp) cp.onclick = ()=>{ const block = out.querySelector('.qc-report'); if(block) U.copy(block.dataset.report||'', 'Отчёт по звонку скопирован ✓'); };
+      // подсветка проблемных мест — раскрыть/свернуть
+      const hl = out.querySelector('#qc-hl-toggle');
+      const box = out.querySelector('#qc-hl-box');
+      if(hl && box) hl.onclick = ()=>{ const open = box.style.display==='none'; box.style.display = open?'block':'none'; hl.textContent = open?'Скрыть проблемные места':'Показать проблемные места'; };
+    }
+
+    /* ---------- эвристический скоринг: ищем признаки checks в тексте ---------- */
+    // Карта ключевых слов по id чек-пункта рубрики. Если id незнаком — fallback на слова из самого текста признака.
+    const QC_SIGNALS = {
+      contact_greet:['здравств','добрый день','добрый вечер','меня зовут','компания','сенсор','представ'],
+      contact_name:['как могу','как обращат','как к вам','подскажите, как','ваше имя','как вас зовут'],
+      contact_initiative:['давайте','предлагаю','смотрите','я расскажу','сейчас объясню'],
+      contact_speech:['извините','хорошо','конечно','понимаю'],
+      prog_frame:['задам пару вопросов','несколько вопросов','сформируем предложение','дальше расскажу','как заключить'],
+      prog_consent:['хорошо?','согласны','договорились','удобно?'],
+      qual_goal:['для чего','для каких','зачем','цель','планируете','чем занимаетесь','тендер'],
+      qual_why_now:['почему сейчас','появились','объект','контракт','встал вопрос'],
+      qual_term:['к какому сроку','когда нужно','срочно','до какого','успеть','к числу'],
+      qual_profile:['организация','ип ','штат','регион','сколько сотрудник','образование','прописк'],
+      qual_self_try:['пробовали сами','сами получить','сами сдать','почему обратились','решение об отказе'],
+      qual_upsell:['проектирован','профпереподготовк','полный пакет','оборудовани','аттпр','смежн'],
+      dm_role:['должность','кем работаете','ваша роль','руководитель','директор'],
+      dm_decision:['принимаете реш','решение приним','правильно понимаю, реш','кто решает'],
+      dm_strategy:['выйти на','критерии выбора','собрать кп','коммерческое предложение'],
+      pres_region:['по вашему региону','работаем по','румянцево','офис','постоянно работаем'],
+      pres_subject:['предмет договора','полученная лицензия','внесение в реестр','не юруслуги','не консультац'],
+      pres_process:['как проходит','анализ','подача','выездная проверка','сопровожден','этап'],
+      pres_benefit:['право работать','зарабатыв','выгод','чтобы вы могли','позволит'],
+      pres_value:['по цене разницы нет','платить дважды','отстройк','качество','полный пакет'],
+      tp_term:['рабочих дней','до 15','до 10','до 20','к числу','к … числу','запускаем завтра','будет готово'],
+      tp_presum:['остались вопросы','всё ли понятно','как вам предложение','резюм'],
+      tp_price:['стоимость','рублей','составит','цена','сумма'],
+      tp_extra:['госпошлин','7500','удобнее','в офисе или','альтернатив'],
+      close_question:['когда готовы начать','начинаем','что скажете','готовы заключ','когда стартуем'],
+      close_next:['жду карточку','документы','наберу','перезвоню','в какой половине','следующ'],
+      close_no_think:[], // обратный признак — см. ниже
+      obj_join:['понимаю','согласен, что','да, действительно','вопрос важный'],
+      obj_open:['почему','с кем сравнив','что именно','что останавлив','с чем сравнив'],
+      obj_argument:['дорого','зато','потому что','наша компания','гарант','в договоре'],
+      obj_close_q:['согласны?','начинаем?','оформляем?','верно?','что скажете?'],
+      obj_sincerity:['не первый год','когда так отвечают','обычно есть причина','честно говоря'],
+      obj_dojim:['заканчива','повышается','последн','группа на обучение','сезон','успеть','бронир','инспектор']
+    };
+    const QC_FORBIDDEN = ['над чем подумать','над чем думать','подумайте и перезвоните','перезвоните, если'];
+
+    // признаки из текста чек-пункта (fallback для незнакомых рубрик)
+    function qcCheckWords(check){
+      const sig = QC_SIGNALS[check.id];
+      if(sig) return sig;
+      const src = ((check.text||'')+' '+(check.hint||'')).toLowerCase();
+      return src.split(/[^a-zа-яё0-9]+/i).filter(w=>w.length>=5).slice(0,8);
+    }
+
+    function scoreHeuristic(text, R){
+      const low = ' ' + text.toLowerCase() + ' ';
+      const wsum = qcWeightSum(R);
+      const stages = R.stages.map(st=>{
+        const checks = (st.checks||[]).map(c=>{
+          let hit;
+          if(c.id==='close_no_think' || c.id==='c_noThink'){
+            // обратный признак: хорошо, если запрещённой фразы НЕТ
+            hit = !QC_FORBIDDEN.some(f=>low.includes(f));
+          } else {
+            const words = qcCheckWords(c);
+            hit = words.length ? words.some(w=>low.includes(w)) : false;
+          }
+          return { id:c.id, text:c.text, ok:hit };
+        });
+        const total = checks.length || 1;
+        const done = checks.filter(c=>c.ok).length;
+        const ratio = done/total;
+        const weight = +st.weight || (100/R.stages.length);
+        const points = Math.round(ratio*weight*10)/10;
+        const good = checks.filter(c=>c.ok).map(c=>c.text);
+        const miss = checks.filter(c=>!c.ok).map(c=>c.text);
+        return {
+          id:st.id, name:st.name, weight, done, total, ratio,
+          points, max:Math.round(weight*10)/10,
+          comment: ratio===1 ? 'Этап отработан полностью.'
+                 : ratio>=0.6 ? 'Этап в целом пройден, есть пробелы.'
+                 : ratio>0 ? 'Этап пройден поверхностно.'
+                 : 'Этап не отработан — ключевые признаки не прозвучали.',
+          good, miss, checks
+        };
+      });
+      const rawScore = stages.reduce((a,s)=>a+s.points,0);
+      // нормируем к 100, если сумма весов не равна 100
+      const score = Math.round((wsum===100 ? rawScore : rawScore/wsum*100));
+      // проблемные места — фразы из текста рядом с запрещёнными формулировками
+      const flags = [];
+      QC_FORBIDDEN.forEach(f=>{ if(low.includes(f)) flags.push('Запрещённая формулировка в звонке: «'+f+'».'); });
+      stages.filter(s=>s.ratio<0.5).forEach(s=>flags.push('Слабый этап «'+s.name+'»: '+(s.miss.slice(0,2).join('; ')||'нет ключевых признаков')+'.'));
+      return { score, stages, flags, mock:true };
+    }
+
+    /* ---------- оценка через LLM (OpenAI-совместимый JSON-ответ) ---------- */
+    function qcRubricContext(R){
+      return R.stages.map(st=>{
+        const checks = (st.checks||[]).map(c=>'    - '+c.text).join('\n');
+        return '• ['+st.id+'] '+st.name+' (вес '+(st.weight||'')+'):\n'+checks;
+      }).join('\n');
+    }
+    const QC_SYSTEM =
+      'Ты — руководитель отдела контроля качества продаж компании Sensor (лицензия МЧС, аттестация проектировщика АТТПР). '+
+      'Оцени транскрипт телефонного звонка менеджера по предоставленной рубрике этапов воронки. '+
+      'Для каждого этапа выстави балл от 0 до его веса (доля выполненных признаков × вес), укажи, что сделано хорошо и что упущено, дай короткий комментарий. '+
+      'Верни СТРОГО JSON без пояснений вокруг, по схеме: '+
+      '{"stages":[{"id":"contact","points":6.4,"comment":"...","good":["..."],"miss":["..."]}],"flags":["проблемное место 1"]}. '+
+      'id этапов бери из рубрики. Отвечай на русском.';
+
+    async function scoreViaLLM(text, R, cfg){
+      const url = cfg.endpoint.replace(/\/+$/,'') + '/chat/completions';
+      const headers = { 'Content-Type':'application/json' };
+      if(cfg.key) headers['Authorization'] = 'Bearer ' + cfg.key;
+      const userMsg = 'РУБРИКА:\n' + qcRubricContext(R) +
+        '\n\nТРАНСКРИПТ ЗВОНКА:\n' + text.slice(0,8000) +
+        '\n\nВерни только JSON по схеме из системного промпта.';
+      const payload = {
+        model: cfg.model || 'local-model',
+        temperature: 0.2,
+        max_tokens: 1200,
+        messages: [ { role:'system', content: QC_SYSTEM }, { role:'user', content: userMsg } ]
+      };
+      const ac = (typeof AbortController!=='undefined') ? new AbortController() : null;
+      const tid = ac ? setTimeout(()=>ac.abort(), 60000) : null;
+      let res;
+      try {
+        res = await fetch(url, { method:'POST', headers, body: JSON.stringify(payload), signal: ac?ac.signal:undefined });
+      } catch(e){
+        if(e && e.name==='AbortError') throw new Error('таймаут запроса (60 с)');
+        throw new Error('сеть недоступна ('+(e&&e.message||e)+')');
+      } finally { if(tid) clearTimeout(tid); }
+      if(!res.ok){
+        let detail=''; try{ const j=await res.json(); detail=(j.error&&j.error.message)||''; }catch(_){}
+        throw new Error('HTTP '+res.status+(detail?' · '+detail:''));
+      }
+      const data = await res.json();
+      const txt = data && data.choices && data.choices[0] && (
+        (data.choices[0].message && data.choices[0].message.content) || data.choices[0].text);
+      if(!txt) throw new Error('пустой ответ модели');
+      const parsed = qcParseJSON(String(txt));
+      if(!parsed || !Array.isArray(parsed.stages)) throw new Error('модель вернула не-JSON');
+      return qcNormalizeLLM(parsed, R);
+    }
+
+    // вытащить JSON из ответа (модель может обрамить ```json … ``` или текстом)
+    function qcParseJSON(s){
+      let str = s.trim().replace(/^```json\s*/i,'').replace(/^```\s*/,'').replace(/```\s*$/,'');
+      try { return JSON.parse(str); } catch(_){}
+      const a = str.indexOf('{'), b = str.lastIndexOf('}');
+      if(a>=0 && b>a){ try { return JSON.parse(str.slice(a,b+1)); } catch(_){} }
+      return null;
+    }
+
+    // привести ответ LLM к нашей структуре + общий взвешенный балл
+    function qcNormalizeLLM(parsed, R){
+      const wsum = qcWeightSum(R);
+      const byId = {}; (parsed.stages||[]).forEach(s=>{ if(s && s.id!=null) byId[s.id]=s; });
+      const stages = R.stages.map(st=>{
+        const weight = +st.weight || (100/R.stages.length);
+        const max = Math.round(weight*10)/10;
+        const got = byId[st.id] || {};
+        let points = Number(got.points);
+        if(!isFinite(points)) points = 0;
+        points = Math.max(0, Math.min(weight, points));
+        points = Math.round(points*10)/10;
+        const ratio = weight ? points/weight : 0;
+        const good = Array.isArray(got.good) ? got.good.map(String) : [];
+        const miss = Array.isArray(got.miss) ? got.miss.map(String) : [];
+        return {
+          id:st.id, name:st.name, weight, points, max, ratio,
+          done:good.length, total:(st.checks||[]).length||1,
+          comment: String(got.comment||'').trim() || (ratio>=0.6?'Этап в целом пройден.':'Этап с пробелами.'),
+          good, miss
+        };
+      });
+      const rawScore = stages.reduce((a,s)=>a+s.points,0);
+      const score = Math.round((wsum===100 ? rawScore : rawScore/wsum*100));
+      const flags = Array.isArray(parsed.flags) ? parsed.flags.map(String) : [];
+      return { score, stages, flags, mock:false };
+    }
+
+    /* ---------- рендер результата оценки ---------- */
+    function qcResultHTML(R, result, source){
+      const v = qcVerdict(R, result.score);
+      const ringColor = v.color==='ok'?'var(--ok)':v.color==='info'?'var(--accent)':v.color==='warn'?'var(--warn)':'var(--err)';
+
+      const cards = result.stages.map(s=>{
+        const pct = s.weight ? Math.round(s.ratio*100) : 0;
+        const tone = s.ratio>=0.9?'ok':s.ratio>=0.6?'info':s.ratio>0?'warn':'err';
+        const edge = s.ratio>=0.9?'var(--ok)':s.ratio>=0.6?'var(--accent)':s.ratio>0?'var(--warn)':'var(--err)';
+        const goodHtml = s.good && s.good.length
+          ? `<div style="margin-top:8px"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;color:var(--ok-d)">Что хорошо</div>
+               <ul style="margin:0;padding-left:17px;color:var(--ink-2);line-height:1.5">${s.good.slice(0,5).map(g=>`<li>${esc(g)}</li>`).join('')}</ul></div>` : '';
+        const missHtml = s.miss && s.miss.length
+          ? `<div style="margin-top:8px"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;color:var(--err-d)">Что упущено</div>
+               <ul style="margin:0;padding-left:17px;color:var(--ink-2);line-height:1.5">${s.miss.slice(0,5).map(m=>`<li>${esc(m)}</li>`).join('')}</ul></div>` : '';
+        return `<div class="card" style="padding:13px 15px;box-shadow:inset 3px 0 0 ${edge},var(--shadow-xs)">
+                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                    <strong style="flex:1;font-size:13.5px">${esc(s.name)}</strong>
+                    <span class="badge ${tone}" style="font-variant-numeric:tabular-nums">${s.points} / ${s.max}</span>
+                  </div>
+                  <div class="bar" style="margin-bottom:6px"><span style="width:${pct}%;background:${edge}"></span></div>
+                  <div style="color:var(--ink-2);line-height:1.5;font-size:12.5px">${esc(s.comment)}</div>
+                  ${goodHtml}${missHtml}
+                </div>`;
+      }).join('');
+
+      const flags = (result.flags||[]).filter(Boolean);
+      const flagsBox = flags.length
+        ? `<div style="margin-top:14px">
+             <button class="btn ghost sm" id="qc-hl-toggle">Скрыть проблемные места</button>
+             <div id="qc-hl-box" style="margin-top:8px;display:block">
+               ${flags.map(f=>`<div style="display:flex;gap:9px;align-items:flex-start;padding:7px 10px;border:1px solid var(--err);border-radius:var(--radius-xs);margin-bottom:6px;background:var(--err-soft,transparent)">
+                   <span style="flex:0 0 auto;color:var(--err);font-weight:700;margin-top:1px">⚑</span>
+                   <span style="flex:1;color:var(--ink-2);line-height:1.5">${esc(f)}</span>
+                 </div>`).join('')}
+             </div>
+           </div>` : '';
+
+      const report = qcReportText(R, result, v);
+
+      return U.card('Оценка звонка', source,
+        `<div class="qc-report" data-report="${esc(report)}">
+           <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px;flex-wrap:wrap">
+             <div style="flex:0 0 auto;width:78px;height:78px;border-radius:50%;display:grid;place-items:center;
+                  border:5px solid ${ringColor};font-variant-numeric:tabular-nums">
+               <span style="font-size:23px;font-weight:800;line-height:1;color:${ringColor}">${result.score}</span>
+             </div>
+             <div style="flex:1;min-width:160px">
+               <div style="font-size:16px;font-weight:700;margin-bottom:3px;color:${ringColor}">${esc(v.label)}</div>
+               <div class="muted" style="font-size:12.5px;line-height:1.4">Общий взвешенный балл из 100 по ${result.stages.length} этап${plural(result.stages.length,'у','ам','ам')}.</div>
+             </div>
+             <button class="btn sm" data-qc-copy style="flex:0 0 auto">Скопировать отчёт</button>
+           </div>
+           <div style="font-weight:600;margin-bottom:8px;font-size:13px">Разбор по этапам</div>
+           <div class="grid" style="gap:10px">${cards}</div>
+           ${flagsBox}
+         </div>`);
+    }
+
+    function qcReportText(R, result, v){
+      const L = [];
+      L.push('Оценка звонка — '+v.label+' · '+result.score+' / 100'+(result.mock?' (эвристический скоринг)':' (оценка LLM)'));
+      L.push('');
+      result.stages.forEach(s=>{
+        L.push('• '+s.name+': '+s.points+' / '+s.max);
+        if(s.comment) L.push('    '+s.comment);
+        (s.good||[]).slice(0,5).forEach(g=>L.push('    + '+g));
+        (s.miss||[]).slice(0,5).forEach(m=>L.push('    − '+m));
+      });
+      if((result.flags||[]).length){
+        L.push('');
+        L.push('Проблемные места:');
+        result.flags.forEach(f=>L.push('  ⚑ '+f));
+      }
+      return L.join('\n');
     }
 
     render();

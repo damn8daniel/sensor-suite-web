@@ -2,8 +2,15 @@
    Возможности: drag&drop шаблона, авто-определение полей (вкл. вложенные {#секции}
    и повторяющиеся), пресеты 6 пакетов УЦ из плейсхолдеров, валидация, склонение ФИО
    (морфология RU в браузере), предпросмотр, экспорт .docx + печать, история генераций.
+   Два режима вкладки «Генератор»:
+     • «Генератор» — свой .docx-шаблон / пресеты (как раньше);
+     • «Пакеты УЦ» — готовые мастер-шаблоны из window.UC_TEMPLATES + поля из
+       window.UC_PACKAGES: единая форма → генерация всего пакета (несколько .docx
+       упаковываются в один .zip). Графические бланки (tokens:[]) включаются как есть.
    Контракт сохранён: id=documents, dept=Документооборот, поля читаются из
-   ctx.data.placeholders.fields ({placeholder, category, source, package}). */
+   ctx.data.placeholders.fields ({placeholder, category, source, package}).
+   UC_PACKAGES/UC_TEMPLATES опциональны — без них режим «Пакеты УЦ» показывает
+   аккуратное пустое состояние, остальной функционал не страдает. */
 SensorApp.register({
   id: 'documents', title: 'Документы', dept: 'Документооборот', order: 10,
   icon: '📄', description: 'Генерация документов из шаблонов · 55 полей, 6 пакетов УЦ',
@@ -12,7 +19,12 @@ SensorApp.register({
   // быстрые действия для командной палитры (⌘K)
   actions: [
     { id:'upload', title:'Загрузить шаблон .docx', hint:'Документы · открыть файл',
-      keywords:['docx','шаблон','файл'], run(){ const i=document.getElementById('doc-tpl'); if(i) i.click(); } },
+      keywords:['docx','шаблон','файл'], run(){ const t=document.querySelector('[data-doc-tab="gen"]'); if(t) t.click();
+        const m=document.querySelector('[data-doc-mode="gen"]'); if(m) m.click(); const i=document.getElementById('doc-tpl'); if(i) i.click(); } },
+    { id:'packages', title:'Пакеты УЦ — готовые документы', hint:'Документы · собрать пакет',
+      keywords:['пакет','уц','диплом','удостоверение','сертификат','docx','zip'],
+      run(){ const t=document.querySelector('[data-doc-tab="gen"]'); if(t) t.click();
+        const m=document.querySelector('[data-doc-mode="packages"]'); if(m) m.click(); } },
     { id:'history', title:'История генераций', hint:'Документы · журнал',
       keywords:['журнал','лог'], run(){ const t=document.querySelector('[data-doc-tab="history"]'); if(t) t.click(); } }
   ],
@@ -347,6 +359,20 @@ SensorApp.register({
        ====================================================================== */
     let tpl = null, tplName = '', detected = null, activePreset = null;
 
+    /* ----------------------------------------------------------------------
+       6a. ДАННЫЕ РЕЖИМА «ПАКЕТЫ УЦ»
+       Готовые мастер-шаблоны .docx + справочник полей по 6 пакетам.
+       Могут отсутствовать (сборка по отделам / тесты) — тогда показываем
+       аккуратное пустое состояние, остальной функционал не страдает.
+       ----------------------------------------------------------------------- */
+    const UCP = (window.UC_PACKAGES && typeof window.UC_PACKAGES === 'object') ? window.UC_PACKAGES : {};
+    const UCT = (window.UC_TEMPLATES && typeof window.UC_TEMPLATES === 'object') ? window.UC_TEMPLATES : {};
+    // порядок пакетов: как в UC_PACKAGES (accreditation, iso, prof_pb, …)
+    const ucPkgIds = Object.keys(UCP);
+    const ucHas = ucPkgIds.length > 0;
+    let ucPkg = null;            // id выбранного пакета в режиме «Пакеты УЦ»
+    const PKEY = 'documents_uc_draft';   // отдельный черновик режима пакетов
+
     /* ======================================================================
        7. РАЗМЕТКА (вкладки: Генератор · Справочник · История)
        ====================================================================== */
@@ -362,9 +388,64 @@ SensorApp.register({
     root.querySelector('#doc-tabs').appendChild(tabs.el);
 
     /* ----------------------------------------------------------------------
-       7a. ВКЛАДКА «ГЕНЕРАТОР»
+       7a. ВКЛАДКА «ГЕНЕРАТОР» — два режима: «Генератор» (свой шаблон/пресеты)
+       и «Пакеты УЦ» (готовые мастер-шаблоны .docx с генерацией пакета).
+       Переключатель-сегмент рядом с заголовком; режим запоминается в store.
        ---------------------------------------------------------------------- */
     function buildGen(){
+      const wrap = document.createElement('div');
+
+      // сегмент-переключатель режимов
+      const sw = document.createElement('div');
+      sw.className = 'card';
+      sw.style.cssText = 'padding:12px 14px;margin-bottom:14px';
+      sw.innerHTML =
+        `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+           <div>
+             <h3 style="margin:0">Режим работы</h3>
+             <p class="hint" style="margin:2px 0 0">Свой .docx-шаблон или готовый пакет документов УЦ.</p>
+           </div>
+           <span class="spacer" style="flex:1"></span>
+           <div class="pill-tabs" id="doc-mode" role="tablist" style="margin-bottom:0">
+             <button type="button" class="pill" data-doc-mode="gen" role="tab"><span class="t-ic" aria-hidden="true">📝</span>Генератор</button>
+             <button type="button" class="pill" data-doc-mode="packages" role="tab"><span class="t-ic" aria-hidden="true">📦</span>Пакеты УЦ${ucHas?` <span class="t-count">${ucPkgIds.length}</span>`:''}</button>
+           </div>
+         </div>`;
+      wrap.appendChild(sw);
+
+      // под-панели режимов: обе в DOM, активная — видима
+      const genPane = document.createElement('div');
+      genPane.id = 'doc-mode-gen';
+      genPane.appendChild(buildOwnGen());
+      wrap.appendChild(genPane);
+
+      const pkgPane = document.createElement('div');
+      pkgPane.id = 'doc-mode-packages';
+      pkgPane.hidden = true;
+      pkgPane.appendChild(buildPackages());
+      wrap.appendChild(pkgPane);
+
+      // выбор режима (по умолчанию «Генератор» — чтобы #doc-presets/#doc-form были живы)
+      const stored = ctx.store.get('documents_mode', 'gen');
+      const startMode = (stored === 'packages' && ucHas) ? 'packages' : 'gen';
+      function setMode(mode){
+        if (mode === 'packages' && !ucHas) mode = 'gen';
+        genPane.hidden = mode !== 'gen';
+        pkgPane.hidden = mode !== 'packages';
+        sw.querySelectorAll('[data-doc-mode]').forEach(b => {
+          const on = b.dataset.docMode === mode;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        ctx.store.set('documents_mode', mode);
+      }
+      sw.querySelectorAll('[data-doc-mode]').forEach(b => { b.onclick = () => setMode(b.dataset.docMode); });
+      setMode(startMode);
+      return wrap;
+    }
+
+    // существующий «Генератор»: дропзона своего шаблона + пресеты + форма.
+    function buildOwnGen(){
       const wrap = document.createElement('div');
 
       // --- дропзона + пресеты ---
@@ -418,9 +499,378 @@ SensorApp.register({
       return wrap;
     }
 
+    /* ----------------------------------------------------------------------
+       7a-bis. РЕЖИМ «ПАКЕТЫ УЦ»
+       Поток: выбор пакета (карточки) → единая форма всех полей пакета →
+       «Сгенерировать пакет» (декод b64 → PizZip → docxtemplater, при
+       нескольких документах — упаковка в .zip и скачивание одним файлом).
+       ---------------------------------------------------------------------- */
+    function ucPkgInfo(id){
+      const p = UCP[id] || {};
+      const m = (p.name || '').match(/ПАКЕТ\s*(\d+)/i);
+      return {
+        id,
+        name: p.name || id,
+        num: (m && m[1]) || '',
+        short: (p.name || id).replace(/ПАКЕТ\s*\d+\s*:?\s*/i, '').trim() || id,
+        fields: Array.isArray(p.fields) ? p.fields : [],
+        docs: Array.isArray(p.docs) ? p.docs : [],
+        templates: Array.isArray(UCT[id]) ? UCT[id] : []
+      };
+    }
+
     // живые ссылки на узлы текущей вкладки «Генератор»
     function liveForm(){ return root.querySelector('#doc-form'); }
     function liveTplbar(){ return root.querySelector('#doc-tplbar'); }
+    function livePkg(){ return root.querySelector('#doc-pkg-body'); }
+
+    function buildPackages(){
+      const wrap = document.createElement('div');
+      wrap.id = 'doc-packages';
+      if (!ucHas){
+        wrap.innerHTML = U.card('Пакеты УЦ',
+          'Готовые мастер-шаблоны документов Учебного центра.',
+          U.empty('📦','Справочник пакетов УЦ не загружен в этой сборке. Воспользуйтесь режимом «Генератор» — загрузите свой .docx-шаблон или выберите пресет.'));
+        return wrap;
+      }
+      // карточки пакетов + тело (форма/действия) ниже
+      const head = document.createElement('div');
+      head.className = 'card';
+      const cards = ucPkgIds.map(id => {
+        const p = ucPkgInfo(id);
+        const tpls = p.templates.length;
+        const withTok = p.templates.filter(t => (t.tokens||[]).length).length;
+        const graphic = tpls - withTok;
+        return `<button type="button" class="doc-pack" data-uc-pick="${U.escape(id)}"
+                   style="cursor:pointer;text-align:left;font:inherit;width:100%"
+                   title="Открыть пакет «${U.escape(p.short)}»">
+             <div class="doc-pack-h"><span class="doc-pack-n">${U.escape(p.num||'•')}</span><b>${U.escape(p.short)}</b></div>
+             <div class="doc-pack-meta">${p.fields.length} ${plural(p.fields.length,'поле','поля','полей')} · ${tpls} ${plural(tpls,'документ','документа','документов')}${graphic?` · ${graphic} ${plural(graphic,'бланк','бланка','бланков')}`:''}</div>
+           </button>`;
+      }).join('');
+      head.innerHTML =
+        `<h3>Пакеты УЦ <span class="badge info">${ucPkgIds.length} ${plural(ucPkgIds.length,'пакет','пакета','пакетов')}</span></h3>
+         <p class="hint">Выберите пакет — заполните единую форму — нажмите «Сгенерировать пакет». Все документы пакета будут собраны из мастер-шаблонов; если их несколько, скачается один <code class="mono">.zip</code>.</p>
+         <div class="grid cols-2" id="doc-uc-cards">${cards}</div>`;
+      wrap.appendChild(head);
+
+      const body = document.createElement('div');
+      body.id = 'doc-pkg-body';
+      wrap.appendChild(body);
+
+      head.querySelectorAll('[data-uc-pick]').forEach(b => { b.onclick = () => pickPackage(b.dataset.ucPick); });
+
+      // восстановим выбранный пакет из черновика, иначе подсказка
+      const draft = ctx.store.get(PKEY, null);
+      if (draft && draft.pkg && UCP[draft.pkg]){
+        pickPackage(draft.pkg, draft.values || {});
+      } else {
+        body.innerHTML = U.card('Документы пакета','',
+          U.empty('👆','Выберите пакет выше, чтобы заполнить форму и сгенерировать документы.'));
+      }
+      return wrap;
+    }
+
+    // выбор пакета → построить единую форму всех полей
+    function pickPackage(id, values){
+      ucPkg = id;
+      const body = livePkg();
+      if (!body) return;
+      const p = ucPkgInfo(id);
+      values = values || {};
+      // отметить активную карточку
+      const cards = root.querySelector('#doc-uc-cards');
+      if (cards) cards.querySelectorAll('[data-uc-pick]').forEach(b => b.classList.toggle('active', b.dataset.ucPick === id));
+
+      if (!p.fields.length){
+        body.innerHTML = U.card('Пакет «'+U.escape(p.short)+'»','',
+          U.empty('🗂️','В справочнике для этого пакета не описаны поля.'));
+        ctx.store.set(PKEY, { pkg:id, values:{} });
+        return;
+      }
+
+      // карта токенов пакета — для авто-склонения и валидации
+      const pkgToks = p.fields.map(f => f.token);
+      const autoN = pkgToks.filter(t => ucIsAuto(t, pkgToks)).length;
+
+      // список документов пакета (что войдёт в выгрузку)
+      const docList = p.templates.length
+        ? p.templates.map(t => {
+            const g = !(t.tokens||[]).length;
+            return `<li>${U.escape(t.title || t.file || 'документ')}${g?' <span class="tok">бланк (как есть)</span>':` <span class="tok">${(t.tokens||[]).length} ${plural((t.tokens||[]).length,'поле','поля','полей')}</span>`}</li>`;
+          }).join('')
+        : (p.docs.map(d => `<li>${U.escape(d)} <span class="tok">нет мастер-шаблона</span></li>`).join('') || '<li class="muted">Мастер-шаблоны не загружены</li>');
+
+      let html = `<div class="card doc-form-head">
+        <h3>Пакет «${U.escape(p.short)}» <span class="badge info">${p.fields.length} ${plural(p.fields.length,'поле','поля','полей')}</span>${autoN?` <span class="badge ok dot">${autoN} авто-склонение</span>`:''}</h3>
+        <p class="hint">${U.escape(p.name)}. Заполните единую форму — система подставит данные во все мастер-шаблоны пакета.</p>
+        <div class="doc-progress"><div class="bar"><span id="doc-pkg-bar" style="width:0%"></span></div><span class="doc-progress-lbl" id="doc-pkg-bar-lbl">0 из 0</span></div>
+      </div>`;
+
+      // поля единой формы (с группировкой по источнику)
+      const groups = {}; const gorder = [];
+      p.fields.forEach(f => {
+        const g = f.source || 'Прочее';
+        if (!groups[g]){ groups[g] = []; gorder.push(g); }
+        groups[g].push(f);
+      });
+      gorder.forEach(g => {
+        html += `<div class="card"><h3>${U.escape(g)} <span class="badge">${groups[g].length}</span></h3>`;
+        groups[g].forEach(f => { html += ucFieldRow(f, values[f.token], pkgToks); });
+        html += `</div>`;
+      });
+
+      // состав пакета + действия
+      const tplCount = p.templates.length;
+      html += `<div class="card">
+        <h3>Состав пакета <span class="badge">${tplCount || p.docs.length}</span></h3>
+        <ul class="doc-pkg-docs" style="margin:6px 0 0;padding-left:18px;line-height:1.9">${docList}</ul>
+      </div>`;
+      html += `<div class="card doc-actions">
+        <div class="btn-row">
+          <button class="btn primary" id="doc-pkg-gen" ${tplCount?'':'disabled title="Мастер-шаблоны пакета не загружены"'}>⤓ Сгенерировать пакет</button>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn ghost sm" id="doc-pkg-demo" title="Заполнить обезличенными образцами">✨ Образец</button>
+          <button class="btn ghost sm" id="doc-pkg-clear">Очистить</button>
+        </div>
+        <div class="doc-pkg-progress" id="doc-pkg-progress" hidden style="margin-top:10px"></div>
+        <p class="foot" style="margin:10px 0 0">Данные не покидают браузер. ${tplCount>1?'Документы будут собраны в один .zip.':''}</p>
+      </div>`;
+
+      body.innerHTML = html;
+
+      // события
+      ucWireDeclension(body, pkgToks);
+      const onAny = U.debounce(() => { ucUpdateProgress(body); ucSaveDraft(body); }, 300);
+      body.querySelectorAll('[data-tok]').forEach(inp => {
+        inp.addEventListener('input', () => { ucLiveValidate(body, inp); onAny(); });
+        inp.addEventListener('blur', () => ucLiveValidate(body, inp, true));
+      });
+      const gen = body.querySelector('#doc-pkg-gen'); if (gen) gen.onclick = () => ucGenerate(body, p);
+      body.querySelector('#doc-pkg-demo').onclick = () => { ucFillDemo(body, p); ucUpdateProgress(body); ucSaveDraft(body); };
+      body.querySelector('#doc-pkg-clear').onclick = async () => {
+        const ok = await U.confirm({ title:'Очистить форму?', message:'Все введённые значения пакета будут удалены.', ok:'Очистить', danger:true });
+        if (!ok) return;
+        body.querySelectorAll('[data-tok]').forEach(i => { i.value=''; i.dataset.touched=''; i.classList.remove('doc-auto-filled'); ucClearError(body, i.dataset.tok); });
+        ucUpdateProgress(body); ucSaveDraft(body);
+      };
+      ucUpdateProgress(body);
+      ctx.store.set(PKEY, { pkg:id, values: ucCollect(body) });
+    }
+
+    // строка поля пакета (метка/источник/валидация/авто-склонение)
+    function ucFieldRow(f, value, pkgToks){
+      const tok = f.token;
+      const type = fieldType(tok);
+      const auto = ucIsAuto(tok, pkgToks);
+      const lbl = (f.label || prettyLabel(tok)) +
+        (auto?' <span class="tok" style="color:var(--ok-d)">авто</span>':'') +
+        (f.source?` <span class="tok">· ${U.escape(f.source)}</span>`:'');
+      const ph = U.escape(f.sample || placeholderHint(tok, type));
+      let input;
+      if (type === 'multiline'){
+        input = `<textarea data-tok="${U.escape(tok)}" rows="2" placeholder="${ph}">${U.escape(value||'')}</textarea>`;
+      } else if (type === 'date'){
+        input = `<input data-tok="${U.escape(tok)}" data-type="date" placeholder="${ph}" value="${U.escape(value||'')}">`;
+      } else if (type === 'inn' || type === 'ogrn'){
+        input = `<input data-tok="${U.escape(tok)}" data-type="${type}" inputmode="numeric" placeholder="${ph}" value="${U.escape(value||'')}">`;
+      } else if (type === 'name'){
+        input = `<input data-tok="${U.escape(tok)}" data-type="name" placeholder="${ph}" value="${U.escape(value||'')}" autocomplete="off">`;
+      } else {
+        input = `<input data-tok="${U.escape(tok)}" placeholder="${ph}" value="${U.escape(value||'')}" autocomplete="off">`;
+      }
+      return `<div class="field doc-field" data-field="${U.escape(tok)}">
+        <label>${lbl} <span class="tok">{${U.escape(tok)}}</span></label>
+        ${input}
+        <div class="doc-err" data-err="${U.escape(tok)}" hidden></div>
+      </div>`;
+    }
+
+    // авто-склоняемое поле пакета: суффикс падежа + базовый ФИО-токен есть в пакете
+    function ucIsAuto(tok, pkgToks){
+      const k = caseFor(tok); if (!k) return false;
+      const base = baseNameTok(tok);
+      return base !== tok && pkgToks.indexOf(base) >= 0;
+    }
+
+    // автозаполнение _GENITIVE/_GENITIVE2 из *_FULL_NAME (переиспользуем Morph)
+    function ucWireDeclension(body, pkgToks){
+      pkgToks.forEach(tok => {
+        const k = caseFor(tok); if (!k) return;
+        const base = baseNameTok(tok);
+        if (base === tok || pkgToks.indexOf(base) < 0) return;
+        const srcInput = body.querySelector(`[data-tok="${cssEsc(base)}"]`);
+        const dstInput = body.querySelector(`[data-tok="${cssEsc(tok)}"]`);
+        if (!srcInput || !dstInput) return;
+        dstInput.dataset.auto = '1';
+        const apply = () => {
+          if (dstInput.dataset.touched === '1') return;
+          const v = srcInput.value.trim();
+          dstInput.value = v ? Morph.declineFio(v, k) : '';
+          dstInput.classList.toggle('doc-auto-filled', !!v);
+          ucClearError(body, tok);
+        };
+        srcInput.addEventListener('input', apply);
+        dstInput.addEventListener('input', () => { dstInput.dataset.touched = '1'; dstInput.classList.remove('doc-auto-filled'); });
+        if (srcInput.value.trim()) apply();
+      });
+    }
+
+    // Валидация полей пакета: как общая validateValue(), но для дат дополнительно
+    // принимаем русский «прозаический» формат «ДД» месяц ГГГГ — он зашит в мастер-
+    // шаблоны УЦ (свидетельства/дипломы) и фигурирует в обезличенных образцах.
+    const RU_MONTHS = 'января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря';
+    const PROSE_DATE = new RegExp('^[«"]?\\s*\\d{1,2}\\s*[»"]?\\s+(' + RU_MONTHS + ')\\s+\\d{4}(\\s*(г|года|г\\.))?$', 'i');
+    function ucValidateValue(type, v){
+      if (type === 'date'){
+        const val = String(v == null ? '' : v).trim();
+        if (!val) return null;
+        if (PROSE_DATE.test(val)) return null;     // «01» января 2025
+        const e = validateValue('date', val);
+        return e ? 'Дата: ДД.ММ.ГГГГ или «ДД» месяц ГГГГ' : null;
+      }
+      return validateValue(type, v);
+    }
+
+    function ucLiveValidate(body, inp, showOk){
+      const tok = inp.dataset.tok;
+      const type = inp.dataset.type || fieldType(tok);
+      const err = ucValidateValue(type, inp.value);
+      if (err){ ucShowError(body, tok, err); inp.setAttribute('aria-invalid','true'); }
+      else { ucClearError(body, tok); inp.removeAttribute('aria-invalid'); }
+      return !err;
+    }
+    function ucShowError(body, tok, msg){ const box = body.querySelector(`[data-err="${cssEsc(tok)}"]`); if (box){ box.hidden=false; box.textContent=msg; } }
+    function ucClearError(body, tok){ const box = body.querySelector(`[data-err="${cssEsc(tok)}"]`); if (box){ box.hidden=true; box.textContent=''; } }
+
+    function ucUpdateProgress(body){
+      const inputs = [...body.querySelectorAll('[data-tok]')];
+      const total = inputs.length;
+      const filled = inputs.filter(i => String(i.value||'').trim()).length;
+      const bar = body.querySelector('#doc-pkg-bar');
+      const lbl = body.querySelector('#doc-pkg-bar-lbl');
+      if (bar) bar.style.width = total ? Math.round(filled/total*100)+'%' : '0%';
+      if (lbl) lbl.textContent = `${filled} из ${total}`;
+    }
+
+    // собрать значения формы пакета (даты нормализуем в ДД.ММ.ГГГГ)
+    function ucCollect(body){
+      const data = {};
+      body.querySelectorAll('[data-tok]').forEach(inp => {
+        const tok = inp.dataset.tok;
+        const type = inp.dataset.type || fieldType(tok);
+        data[tok] = type === 'date' ? normDate(inp.value) : inp.value;
+      });
+      return data;
+    }
+
+    function ucValidateAll(body){
+      let firstBad = null, count = 0, empties = 0;
+      body.querySelectorAll('[data-tok]').forEach(inp => {
+        const tok = inp.dataset.tok;
+        const type = inp.dataset.type || fieldType(tok);
+        if (!String(inp.value||'').trim()){ empties++; return; }
+        const err = ucValidateValue(type, inp.value);
+        if (err){ ucShowError(body, tok, err); inp.setAttribute('aria-invalid','true'); count++; if(!firstBad) firstBad = inp; }
+      });
+      return { ok: count===0, count, empties, firstBad };
+    }
+
+    function ucSaveDraft(body){
+      if (!ucPkg) return;
+      try{ ctx.store.set(PKEY, { pkg:ucPkg, values: ucCollect(body), at:new Date().toISOString() }); }catch(e){}
+    }
+
+    function ucFillDemo(body, p){
+      p.fields.forEach(f => {
+        const inp = body.querySelector(`[data-tok="${cssEsc(f.token)}"]`);
+        if (!inp) return;
+        if (caseFor(f.token) && inp.dataset.auto==='1') return; // склоняемые заполнятся авто
+        inp.value = f.sample != null ? String(f.sample) : '';
+        inp.dispatchEvent(new Event('input', { bubbles:true }));
+      });
+      ctx.toast('Форма заполнена обезличенными образцами','info');
+    }
+
+    /* --- генерация пакета: каждый мастер-шаблон → docxtemplater; сборка в .zip --- */
+    function ucGenerate(body, p){
+      if (!p.templates.length){ ctx.toast('Мастер-шаблоны пакета не загружены','err'); return; }
+      const v = ucValidateAll(body);
+      if (!v.ok){ if (v.firstBad) v.firstBad.focus(); ctx.toast(`Исправьте ${v.count} ${plural(v.count,'поле','поля','полей')} с ошибками`,'err'); return; }
+      const run = () => ucProduce(body, p);
+      if (v.empties){
+        U.confirm({ title:'Есть незаполненные поля', message:`Не заполнено ${v.empties} ${plural(v.empties,'поле','поля','полей')}. Сгенерировать пакет? Пустые поля останутся пустыми.`, ok:'Сгенерировать' })
+          .then(ok => { if (ok) run(); });
+      } else run();
+    }
+
+    function ucProduce(body, p){
+      const data = ucCollect(body);
+      const prog = body.querySelector('#doc-pkg-progress');
+      const total = p.templates.length;
+      const setProg = (n, msg) => {
+        if (!prog) return;
+        prog.hidden = false;
+        prog.innerHTML = `<div class="doc-progress"><div class="bar"><span style="width:${Math.round(n/total*100)}%"></span></div><span class="doc-progress-lbl">${U.escape(msg||(n+' из '+total))}</span></div>`;
+      };
+      const gen = body.querySelector('#doc-pkg-gen');
+      if (gen){ gen.disabled = true; }
+      setProg(0, 'Подготовка…');
+
+      const built = [];   // {name, content(uint8array/binary)}
+      const usedNames = {};
+      const uniqueName = (base) => {
+        let name = base, i = 2;
+        while (usedNames[name]){ name = base.replace(/\.docx$/i,'') + ' ('+(i++)+').docx'; }
+        usedNames[name] = true; return name;
+      };
+      const safe = (s) => String(s||'документ').replace(/[\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();
+
+      try{
+        p.templates.forEach((t, i) => {
+          setProg(i, `Сборка: ${t.title || t.file || ('документ '+(i+1))}…`);
+          const base = safe(t.title || (t.file||'').replace(/^Копия\s+/i,'').replace(/\.docx$/i,'') || ('документ '+(i+1))) + '.docx';
+          let content;
+          const tokens = t.tokens || [];
+          if (!tokens.length){
+            // графический бланк — включаем как есть (только декодируем base64)
+            const zip = new PizZip(t.b64, { base64:true });
+            content = zip.generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          } else {
+            const zip = new PizZip(t.b64, { base64:true });
+            const doc = new window.docxtemplater(zip, {
+              paragraphLoop:true, linebreaks:true,
+              delimiters:{ start:'{', end:'}' },
+              nullGetter:()=> ''
+            });
+            doc.render(data);
+            content = doc.getZip().generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          }
+          built.push({ name: uniqueName(base), content });
+        });
+
+        const pkgTitle = safe(p.short || p.name || 'Пакет');
+        if (built.length === 1){
+          setProg(total, 'Готово');
+          const blob = new Blob([built[0].content], { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+          U.download(built[0].name, blob);
+        } else {
+          setProg(total, 'Упаковка в .zip…');
+          const out = new PizZip();
+          built.forEach(b => out.file(b.name, b.content));
+          const zipBlob = out.generate({ type:'blob', mimeType:'application/zip' });
+          U.download(`${pkgTitle} — документы.zip`, zipBlob);
+        }
+        if (prog) prog.hidden = true;
+        ctx.toast(`Пакет «${p.short}» сгенерирован: ${built.length} ${plural(built.length,'документ','документа','документов')} ✓`,'ok');
+        pushHistory({ name: p.name, fields: Object.keys(data).filter(k=>String(data[k]||'').trim()).length, preset: 'Пакет УЦ: '+p.short, values: data, out: built.length>1?`${pkgTitle} — документы.zip`:built[0].name, docs: built.length });
+      }catch(err){
+        if (prog) prog.hidden = true;
+        ctx.toast('Ошибка генерации пакета: '+(err.message||err),'err');
+      }finally{
+        if (gen){ gen.disabled = false; }
+      }
+    }
 
     function badgeEnv(){ return ''; }
 
