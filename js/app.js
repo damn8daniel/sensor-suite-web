@@ -28,6 +28,10 @@ window.SensorApp = (function () {
     const cur = current && current.id;
     if (cur && !moduleById(cur)) { navigate(firstId()); }
     else route();           // перерисовать активный пункт/палитру под новый набор
+    // [role:change] аддитивное document-событие (как 'theme:change' в setTheme):
+    // позволяет внешним модулям (Настройки) живо синхронизировать подсветку роли,
+    // даже когда смена пришла извне их экрана (например из тура онбординга).
+    document.dispatchEvent(new CustomEvent('role:change', { detail:{ role: r } }));
   }
   // белый список модулей для роли ('settings' всегда добавляется), либо null = все
   function roleAllowedIds(){

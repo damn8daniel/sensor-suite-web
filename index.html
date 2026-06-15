@@ -21,8 +21,8 @@
 
 /* глобальный поиск (триггер палитры) */
 .global-search{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;color:var(--muted);
-  background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:7px 8px 7px 12px;cursor:text;
-  transition:.14s;min-width:200px}
+  background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:7px 8px 7px 12px;cursor:text;min-height:24px;
+  transition:border-color var(--t-fast) var(--ease),color var(--t-fast) var(--ease),background var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease);min-width:200px}
 .global-search:hover{border-color:var(--line-2);color:var(--ink-2)}
 .global-search:focus-visible{outline:none;border-color:var(--accent);box-shadow:var(--ring)}
 .global-search .gs-ic{font-size:15px;line-height:1}
@@ -32,20 +32,26 @@
 
 /* индикатор демо-данных */
 .demo-indicator{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12px;font-weight:600;
-  color:var(--warn-d);background:var(--warn-soft);border:1px solid transparent;border-radius:999px;padding:5px 11px;cursor:pointer;transition:.14s;white-space:nowrap;min-height:24px}
+  color:var(--warn-d);background:var(--warn-soft);border:1px solid transparent;border-radius:999px;padding:5px 11px;cursor:pointer;
+  transition:filter var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease);white-space:nowrap;min-height:24px}
 .demo-indicator:hover{filter:brightness(.97)}
 .demo-indicator:focus-visible{outline:none;box-shadow:var(--ring)}
 [data-theme="dark"] .demo-indicator{color:var(--warn);background:var(--warn-soft)}
 .demo-indicator .demo-dot{width:7px;height:7px;border-radius:50%;background:var(--warn);box-shadow:0 0 0 0 rgba(200,136,26,.45);animation:demopulse 2s infinite}
 @keyframes demopulse{0%{box-shadow:0 0 0 0 rgba(200,136,26,.4)}70%{box-shadow:0 0 0 6px rgba(200,136,26,0)}100%{box-shadow:0 0 0 0 rgba(200,136,26,0)}}
 
-/* модал: крестик + появление */
-.modal-bg{opacity:0;transition:opacity .16s ease}
-.modal-bg.show{opacity:1}
-.modal{position:relative;transform:translateY(8px) scale(.98);transition:transform .18s cubic-bezier(.2,.7,.3,1)}
+/* модал: крестик + появление.
+   Затемнение (scrim) затухает через background/backdrop-filter, НЕ через opacity
+   всей подложки — иначе содержимое модалки кадр-другой полупрозрачно и контраст
+   проседает. Контент модалки всегда непрозрачен; въезд панели — трансформом. */
+.modal-bg{background:rgba(15,19,26,0);-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
+  transition:background var(--t) var(--ease),backdrop-filter var(--t) var(--ease),-webkit-backdrop-filter var(--t) var(--ease)}
+.modal-bg.show{background:rgba(15,19,26,.5);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.modal{position:relative;transform:translateY(8px) scale(.98);transition:transform var(--t) var(--ease-out)}
 .modal-bg.show .modal{transform:none}
 .modal-x{position:absolute;top:12px;right:12px;width:30px;height:30px;display:grid;place-items:center;border:none;background:transparent;
-  color:var(--muted);font-size:22px;line-height:1;border-radius:8px;cursor:pointer;transition:.12s}
+  color:var(--muted);font-size:22px;line-height:1;border-radius:var(--radius-xs);cursor:pointer;
+  transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease)}
 .modal-x:hover{background:var(--panel-2);color:var(--ink)}
 .modal-x:focus-visible{outline:none;box-shadow:var(--ring);color:var(--ink)}
 .modal-msg{margin:0 0 14px;font-size:14px;color:var(--ink-2);line-height:1.55}
@@ -56,15 +62,19 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px colo
 .btn.danger{background:var(--err);border-color:var(--err);color:#fff}
 .btn.danger:hover{filter:brightness(.94)}
 
-/* badge доп. варианты */
-.badge.info{background:var(--accent-soft);color:var(--accent-d);border-color:transparent}
-.badge.accent{background:var(--navy);color:#fff;border-color:transparent}
+/* badge доп. варианты.
+   .badge.info уже задан в app.css информационным синим (--info/--info-soft) —
+   НЕ переопределяем здесь, иначе info визуально сливается с accent (брендовый красный). */
+.badge.accent{background:var(--navy);color:var(--navy-ink);border-color:transparent}
 
 /* empty: действие */
 .empty .empty-action{margin-top:16px}
 
-/* skeleton */
-.skeleton{display:flex;flex-direction:column;gap:10px;padding:2px 0}
+/* skeleton — живой вариант (ui.skeleton(): контейнер .skeleton + строки .sk-line).
+   Гасим унаследованный из app.css фон и бегущий ::after-шиммер контейнера, чтобы
+   мерцала только каждая строка .sk-line (без двойного шиммера поверх блока). */
+.skeleton{display:flex;flex-direction:column;gap:10px;padding:2px 0;background:transparent;overflow:visible}
+.skeleton::after{content:none}
 .sk-line{height:13px;border-radius:7px;background:linear-gradient(90deg,var(--line) 25%,var(--line-2) 37%,var(--line) 63%);
   background-size:400% 100%;animation:skshine 1.4s ease infinite}
 @keyframes skshine{0%{background-position:100% 0}100%{background-position:0 0}}
@@ -72,11 +82,12 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px colo
 /* tabs: underline-вариант (pill уже есть в app.css) */
 .tabs-underline{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto}
 .tabs-underline .tab{position:relative;font:inherit;font-size:13.5px;font-weight:550;color:var(--muted);background:none;border:none;
-  padding:10px 14px 11px;cursor:pointer;white-space:nowrap;transition:.12s;border-bottom:2px solid transparent;margin-bottom:-1px}
+  padding:10px 14px 11px;cursor:pointer;white-space:nowrap;
+  transition:color var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease);border-bottom:2px solid transparent;margin-bottom:-1px}
 .tabs-underline .tab:hover{color:var(--ink-2)}
 .tabs-underline .tab.active{color:var(--ink);border-bottom-color:var(--accent)}
-.tabs-underline .tab:focus-visible,.pill-tabs .pill:focus-visible{outline:none;box-shadow:var(--ring);border-radius:8px;position:relative;z-index:1}
-.pill-tabs .pill{font:inherit;background:var(--panel);transition:.12s}
+.tabs-underline .tab:focus-visible,.pill-tabs .pill:focus-visible{outline:none;box-shadow:var(--ring);border-radius:var(--radius-xs);position:relative;z-index:1}
+.pill-tabs .pill{font:inherit;background:var(--panel);transition:background var(--t-fast) var(--ease),color var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease),box-shadow var(--t-fast) var(--ease)}
 .t-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;
   font-size:11px;font-weight:600;line-height:1;padding:0 6px;border-radius:999px;
   background:var(--panel-2);color:var(--muted);margin-left:6px;font-variant-numeric:tabular-nums;
@@ -93,12 +104,14 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px colo
 .tbl-cap{font-size:12px;color:var(--muted);margin-bottom:8px}
 
 /* ===== командная палитра (Cmd/Ctrl-K) ===== */
-.cmdk-bg{position:fixed;inset:0;z-index:9500;background:rgba(20,26,34,.4);backdrop-filter:blur(2px);
-  display:flex;justify-content:center;align-items:flex-start;padding:14vh 20px 20px;opacity:0;transition:opacity .14s ease}
-.cmdk-bg.show{opacity:1}
+.cmdk-bg{position:fixed;inset:0;z-index:9500;background:rgba(15,19,26,0);
+  -webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
+  display:flex;justify-content:center;align-items:flex-start;padding:14vh 20px 20px;
+  transition:background var(--t) var(--ease),backdrop-filter var(--t) var(--ease),-webkit-backdrop-filter var(--t) var(--ease)}
+.cmdk-bg.show{background:rgba(15,19,26,.5);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
 .cmdk{width:100%;max-width:600px;background:var(--panel);border:1px solid var(--line);border-radius:16px;
-  box-shadow:0 24px 64px rgba(20,26,34,.28),0 2px 8px rgba(20,26,34,.12);overflow:hidden;
-  transform:translateY(-10px) scale(.985);transition:transform .18s cubic-bezier(.2,.7,.3,1)}
+  box-shadow:var(--shadow-l);overflow:hidden;
+  transform:translateY(-10px) scale(.985);transition:transform var(--t) var(--ease-out)}
 .cmdk-bg.show .cmdk{transform:none}
 .cmdk-head{display:flex;align-items:center;gap:11px;padding:14px 16px;border-bottom:1px solid var(--line)}
 .cmdk-ic{font-size:18px;color:var(--muted)}
@@ -117,7 +130,7 @@ input.invalid,textarea.invalid{border-color:var(--err);box-shadow:0 0 0 3px colo
 .cmdk-item-title{font-size:14px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cmdk-item-hint{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cmdk-item-kind{font-size:10.5px;color:var(--muted);background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:2px 8px;flex:0 0 auto}
-.cmdk-item.active .cmdk-item-kind{background:rgba(214,47,30,.1);border-color:transparent;color:var(--accent-d)}
+.cmdk-item.active .cmdk-item-kind{background:color-mix(in srgb, var(--accent) 12%, transparent);border-color:transparent;color:var(--accent-d)}
 .cmdk-empty{padding:32px 16px;text-align:center;color:var(--muted);font-size:13.5px}
 .cmdk-foot{display:flex;align-items:center;gap:16px;padding:9px 16px;border-top:1px solid var(--line);background:var(--panel-2);font-size:11.5px;color:var(--muted)}
 .cmdk-foot .kbd{font-size:11px;padding:1px 5px}

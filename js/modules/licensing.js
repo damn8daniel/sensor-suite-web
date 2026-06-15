@@ -581,6 +581,7 @@ SensorApp.register({
     }
     root.querySelector('#tpl').addEventListener('change', e => {
       const file = e.target.files[0]; if (!file) return;
+      if (!/\.docx$/i.test(file.name)){ resetTpl(); ctx.toast('Нужен файл .docx', 'err'); return; }
       const rd = new FileReader();
       rd.onload = () => {
         try {
@@ -591,8 +592,9 @@ SensorApp.register({
           root.querySelector('#tplname').className = 'badge ok';
           root.querySelector('#tpl-clear').style.display = '';
           renderTokenReport(); renderPassport();
-        } catch (err){ resetTpl(); ctx.toast('Не удалось прочитать шаблон: ' + err.message, 'err'); }
+        } catch (err){ resetTpl(); ctx.toast('Не удалось прочитать шаблон: ' + (err && err.message || err), 'err'); }
       };
+      rd.onerror = () => { resetTpl(); ctx.toast('Ошибка чтения файла', 'err'); };
       rd.readAsArrayBuffer(file);
     });
     root.querySelector('#tpl-clear').addEventListener('click', () => { resetTpl(); ctx.toast('Шаблон убран', 'info'); });
@@ -927,7 +929,7 @@ SensorApp.register({
       const list = loadDrafts();
       list.unshift({
         id: 'dft_' + Date.now().toString(36),
-        title: String(title).trim(),
+        title: String(title).trim().slice(0, 120),   // защита от чрезмерно длинных имён
         form: state.form, docType: state.docType, docName: dt ? dt.name : '',
         vals: v, docValues: Object.assign({}, state.docValues), savedAt: new Date().toISOString()
       });
@@ -944,6 +946,10 @@ SensorApp.register({
       state.docValues = (d.docValues && typeof d.docValues === 'object') ? Object.assign({}, d.docValues) : {};
       fillTypes();
       setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d.vals || {}));
+      // сбрасываем поле/бейдж пробива — иначе старая отметка «данные DaData ✓»
+      // повисает над уже другими реквизитами загруженного черновика
+      const li = root.querySelector('#lookup-inn'); if (li) li.value = '';
+      const ln = root.querySelector('#lookup-note'); if (ln) ln.style.display = 'none';
       runValidation(); updateCompleteness(); renderDocFields();
       root.scrollTo ? root.scrollTo({ top:0 }) : null;
       ctx.toast('Черновик «' + (d.title || '') + '» загружен', 'ok');

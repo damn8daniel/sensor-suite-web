@@ -22,7 +22,9 @@
   --ok:#1f9d63; --ok-d:#16794c; --ok-soft:#e7f6ee;
   --warn:#c8881a; --warn-d:#8a5d12; --warn-soft:#fdf3e3;
   --err:#d64545; --err-d:#b53333; --err-soft:#fdecec;
-  --info:#2f6fd6; --info-soft:#e8f0fd;
+  /* --info затемнён с #2f6fd6 до #2a66cc: текст .badge.info на --info-soft
+     достигает контраста AA 4.5:1 (было 4.19). Остаётся явно синим. */
+  --info:#2a66cc; --info-soft:#e8f0fd;
 
   /* Радиусы */
   --radius:13px; --radius-s:9px; --radius-xs:6px; --radius-pill:999px;
@@ -303,6 +305,11 @@ select{
   background-repeat:no-repeat;background-position:right 11px center;
   padding-right:32px;cursor:pointer;
 }
+/* В тёмной теме «жёсткий» серый шеврон (#727c8c) тускнеет — берём более светлый
+   (--ink-3 #8b95a5), чтобы стрелка читалась на тёмной поверхности select. */
+[data-theme="dark"] select{
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b95a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+}
 input[type="checkbox"],input[type="radio"]{width:auto;accent-color:var(--accent);cursor:pointer}
 ::-webkit-input-placeholder{letter-spacing:-.003em}
 
@@ -479,6 +486,9 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeri
   border:1px solid rgba(255,255,255,.08);
   animation:toastin var(--t-slow) var(--ease-out);
   position:relative;overflow:hidden;
+  /* длинные неразрывные токены (ИНН/URL/имена файлов) переносим, а не обрезаем
+     краем overflow:hidden */
+  overflow-wrap:anywhere;word-break:break-word;
 }
 .toast::before{
   content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
@@ -496,7 +506,10 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeri
   -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
   display:grid;place-items:center;
   z-index:9000;padding:20px;
-  animation:fadein var(--t) var(--ease);
+  /* Появление: затухает ТОЛЬКО фон-затемнение (scrim), а не вся подложка вместе
+     с содержимым модалки. Так текст модалки всегда отрисован при полной
+     непрозрачности — корректный контраст (axe не ловит «полупрозрачный» кадр). */
+  animation:scrimin var(--t) var(--ease);
 }
 .modal{
   background:var(--panel);
@@ -505,12 +518,14 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeri
   box-shadow:var(--shadow-l);
   max-width:560px;width:100%;max-height:85vh;overflow:auto;
   padding:24px;
+  /* въезд панели — только трансформом, без opacity (контент сразу непрозрачен) */
   animation:modalin var(--t-slow) var(--ease-out);
 }
 .modal h3{margin:0 0 14px;font-size:17px;letter-spacing:-.02em}
 .modal .modal-body{font-size:13.5px;line-height:1.55}
-@keyframes fadein{from{opacity:0}to{opacity:1}}
-@keyframes modalin{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes scrimin{from{background:rgba(15,19,26,0);-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0)}
+  to{background:rgba(15,19,26,.5);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}}
+@keyframes modalin{from{transform:translateY(14px) scale(.97)}to{transform:none}}
 
 /* ---------- 16. Доп. визуальные элементы ---------- */
 /* прогресс-бар (management.js строит инлайном — даём чистый класс на будущее) */

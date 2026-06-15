@@ -227,7 +227,7 @@ SensorApp.register({
         const deb = U.debounce(()=>{ compState.q = q.value; renderCompetitors(); restoreFocus('#an-comp-q'); }, 110);
         q.addEventListener('input', deb);
       }
-      if(qx) qx.onclick = ()=>{ compState.q=''; renderCompetitors(); };
+      if(qx) qx.onclick = ()=>{ compState.q=''; renderCompetitors(); restoreFocus('#an-comp-q'); };
       const clr = elPanel.querySelector('#an-comp-clear'); if(clr) clr.onclick = ()=>{ compState.q=''; renderCompetitors(); };
 
       elPanel.querySelectorAll('th[data-sort]').forEach(th=>{
@@ -287,7 +287,7 @@ SensorApp.register({
                    </div>
                    <div style="flex:0 0 auto;text-align:right;white-space:nowrap">${statusBadge(cl.status)}</div>
                  </div>
-                 ${cl.intent?`<div style="margin-top:6px">${U.badge('интент: '+cl.intent, cl.intent.indexOf('коммер')>=0?'accent':'')}</div>`:''}
+                 ${cl.intent?`<div style="margin-top:6px">${U.badge('интент: '+cl.intent, String(cl.intent).indexOf('коммер')>=0?'accent':'')}</div>`:''}
                </div>`).join('') +
           `</div>`
         : `<div class="muted">Кластеры не заданы.</div>`;

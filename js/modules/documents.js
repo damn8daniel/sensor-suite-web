@@ -130,7 +130,7 @@ SensorApp.register({
         if (last(l) === 'ь') return cap(l.slice(0,-1) + ({gen:'я',dat:'ю',ins:'ем'}[kase]));
         if (last(l) === 'й') return cap(l.slice(0,-1) + ({gen:'я',dat:'ю',ins:'ем'}[kase]));
         if (last(l) === 'а') return cap(l.slice(0,-1) + ({gen:'ы',dat:'е',ins:'ой'}[kase]));
-        if (last(l) === 'я') return cap(l.slice(0,-1) + ({gen:'и',dat:'е',ей:'ей'}[kase]||({gen:'и',dat:'е',ins:'ей'}[kase])));
+        if (last(l) === 'я') return cap(l.slice(0,-1) + ({gen:'и',dat:'е',ins:'ей'}[kase]));
         if (!isVowel(last(l))) return cap(l + ({gen:'а',dat:'у',ins:'ом'}[kase])); // Гринберг → Гринберга
         return sur;
       }
@@ -1418,7 +1418,7 @@ SensorApp.register({
         if (caseFor(tok) && inp.dataset.auto==='1') return; // склоняемые заполнятся авто
         const type = fieldType(tok); const u = tok.toUpperCase();
         let v = '';
-        if (type==='name'){ v = /_ISO_EXPERT|EXPERT/.test(u) && !/STUDENT/.test(u) ? DEMO.name : (/STUDENT/.test(u)? DEMO.name : DEMO.name); }
+        if (type==='name'){ v = DEMO.name; }
         else if (type==='inn') v = DEMO.inn;
         else if (type==='ogrn') v = DEMO.ogrn;
         else if (type==='date') v = DEMO.date;

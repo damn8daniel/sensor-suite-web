@@ -120,8 +120,7 @@ SensorApp.register({
     let resultHTML = '';
 
     function persist(){
-      const { ...copy } = state;
-      try { ctx.store.set(DKEY, copy); } catch(e){}
+      try { ctx.store.set(DKEY, Object.assign({}, state)); } catch(e){}
     }
 
     /* ====================================================================
@@ -394,15 +393,15 @@ SensorApp.register({
       }
       const need = (views!=null && views>0) ? techNeed(R, views) : null;
       if(need!=null){
-        lines.push({ok:true, text:`Для ${views} вид${plural(views,'а','ов','ов')} работ требуется не менее ${need} техспециалист${plural(need,'а','ов','ов')} (по трудовым договорам).`});
+        lines.push({ok:true, text:`Для ${views} вид${plural(views,'','а','ов')} работ требуется не менее ${need} техспециалист${plural(need,'','а','ов')} (по трудовым договорам).`});
         if(have==null){
           lines.push({warn:true, text:'Не указано фактическое число техспециалистов.'});
           warn=true; next.push(`Подтвердить наличие ≥${need} техспециалистов с трудовыми договорами.`);
         } else if(have>=need){
           lines.push({ok:true, text:`Фактически ${have} — требование (≥${need}) выполнено.`});
         } else {
-          lines.push({fail:true, text:`Фактически ${have} — не хватает ${need-have} техспециалист${plural(need-have,'а','ов','ов')} до минимума (${need}).`});
-          fail=true; next.push(`Добрать ${need-have} техспециалист${plural(need-have,'а','ов','ов')} (подбор и оформление берём на себя).`);
+          lines.push({fail:true, text:`Фактически ${have} — не хватает ${need-have} техспециалист${plural(need-have,'','а','ов')} до минимума (${need}).`});
+          fail=true; next.push(`Добрать ${need-have} техспециалист${plural(need-have,'','а','ов')} (подбор и оформление берём на себя).`);
         }
       }
       // образование техспеца — не ниже СПО

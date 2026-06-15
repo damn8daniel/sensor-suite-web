@@ -718,6 +718,14 @@ SensorApp.register({
     }
 
     /* ───────────────────────── биндинги темы ───────────────────────── */
+    // выделить опцию темы id в сегмент-контроле «Оформление» (active + aria-pressed)
+    function markThemeOpt(id){
+      root.querySelectorAll('#theme-tabs .theme-opt').forEach(x => {
+        const on = x.dataset.theme === id;
+        x.classList.toggle('active', on);
+        x.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
     function bindTheme(){
       const NAMES = { light:'светлая', dark:'тёмная', auto:'системная' };
       root.querySelectorAll('#theme-tabs .theme-opt').forEach(opt => {
@@ -728,13 +736,42 @@ SensorApp.register({
           // подписывается/отписывается от системной темы для 'auto'
           if (ctx.app && ctx.app.setTheme) ctx.app.setTheme(t);
           else { store.set('theme', t); document.documentElement.setAttribute('data-theme', t); }
-          root.querySelectorAll('#theme-tabs .theme-opt').forEach(x => {
-            const on = x === opt; x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
-          });
+          markThemeOpt(t);
           ctx.toast('Тема: ' + (NAMES[t] || t), 'info');
         };
       });
     }
+    // [theme-sync] Внешняя смена темы (тумблер #theme-toggle в сайдбаре) шлёт
+    // document-событие 'theme:change' (см. app.js setTheme). Подписываемся, чтобы
+    // выбор в «Оформлении» не «застревал» в прошлом значении. Слушатель снимается
+    // в unmount (и при re-mount модуля — см. ниже), чтобы не было утечек.
+    function onThemeChange(e){
+      const pref = e && e.detail && e.detail.pref;
+      if (pref) markThemeOpt(pref);
+    }
+    // снять прежний слушатель (на случай re-mount без прохода через router.unmount)
+    if (self._themeChangeHandler) { try { document.removeEventListener('theme:change', self._themeChangeHandler); } catch(e){} }
+    self._themeChangeHandler = onThemeChange;
+    document.addEventListener('theme:change', onThemeChange);
+
+    // [role-sync] Внешняя смена роли (тур/палитра/прямой setRole) шлёт document-
+    // событие 'role:change' (см. app.js setRole) — синхронизируем подсветку
+    // сегмент-контрола, чтобы «Оформление» не показывало прошлую роль.
+    function markRoleOpt(r){
+      const R = (ctx.app && ctx.app.roles) || (typeof window!=='undefined' && window.SUITE_ROLES) || { hints:{} };
+      root.querySelectorAll('#role-seg .role-opt').forEach(x => {
+        const on = x.dataset.role === r; x.classList.toggle('active', on); x.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      const hintEl = root.querySelector('#role-hint');
+      if (hintEl && R.hints) hintEl.textContent = R.hints[r] || '';
+    }
+    function onRoleChange(e){
+      const r = e && e.detail && e.detail.role;
+      if (r) markRoleOpt(r);
+    }
+    if (self._roleChangeHandler) { try { document.removeEventListener('role:change', self._roleChangeHandler); } catch(e){} }
+    self._roleChangeHandler = onRoleChange;
+    document.addEventListener('role:change', onRoleChange);
 
     /* ───────────────────────── биндинги режима (роли) ─────────────────────────
        Сегмент-контрол: смена роли через ctx.app.setRole (мгновенно перестраивает
@@ -801,7 +838,10 @@ SensorApp.register({
             : (isPlainObj(parsed) ? parsed : null);
           if (!incoming){ ctx.toast('В файле нет настроек', 'err'); imp.value=''; return; }
           // тема из файла — только из белого списка, иначе игнорируем
-          const importTheme = (incoming.theme === 'dark' || incoming.theme === 'light') ? incoming.theme : null;
+          const importTheme = (incoming.theme === 'dark' || incoming.theme === 'light' || incoming.theme === 'auto') ? incoming.theme : null;
+          // роль из файла — только из карты ролей, иначе игнорируем (не плодим мусор в store)
+          const ROLE_IDS = Object.keys(((ctx.app && ctx.app.roles) || (typeof window!=='undefined' && window.SUITE_ROLES) || {}).labels || { manager:1, operator:1 });
+          const importRole = ROLE_IDS.indexOf(incoming.role) >= 0 ? incoming.role : null;
           const credCount = isPlainObj(incoming.creds) ? Object.keys(incoming.creds).length : 0;
           const yes = await ui.confirm({
             title: 'Импорт настроек',
@@ -813,7 +853,11 @@ SensorApp.register({
           if (!yes) return;
           // переносим ключи верхнего уровня в store (контракт: set per-key);
           // тему нормализуем, чтобы в data-theme/store не попало произвольное значение
-          Object.keys(incoming).forEach(k => store.set(k, k === 'theme' ? (importTheme || 'light') : incoming[k]));
+          Object.keys(incoming).forEach(k => {
+            if (k === 'theme'){ if (importTheme) store.set('theme', importTheme); return; }
+            if (k === 'role'){ if (importRole) store.set('role', importRole); return; }
+            store.set(k, incoming[k]);
+          });
           if (importTheme){ document.documentElement.setAttribute('data-theme', importTheme); }
           ctx.toast('Настройки импортированы ✓', 'ok');
           if (ctx.app && ctx.app.refreshDemoBadge) ctx.app.refreshDemoBadge();
@@ -855,5 +899,17 @@ SensorApp.register({
       bindData();
     }
     bindCurrent();
+
+    /* размонтирование: снять document-слушатель темы (без утечек) */
+    self.unmount = function(){
+      if (self._themeChangeHandler){
+        try { document.removeEventListener('theme:change', self._themeChangeHandler); } catch(e){}
+        self._themeChangeHandler = null;
+      }
+      if (self._roleChangeHandler){
+        try { document.removeEventListener('role:change', self._roleChangeHandler); } catch(e){}
+        self._roleChangeHandler = null;
+      }
+    };
   }
 });
