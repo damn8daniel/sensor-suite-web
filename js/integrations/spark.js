@@ -45,9 +45,11 @@
     title: 'SPARK Интерфакс',
     webCapable: false,
     fields: [
-      { key: 'login', label: 'Логин SPARK',              type: 'text' },
-      { key: 'key',   label: 'Ключ доступа (API key)',   type: 'password' },
-      { key: 'host',  label: 'Хост API (необязательно)', type: 'text' }
+      { key: 'login',   label: 'Логин SPARK',                          type: 'text' },
+      { key: 'key',     label: 'Ключ доступа (API key)',               type: 'password' },
+      { key: 'host',    label: 'Хост API (необязательно)',             type: 'text' },
+      { key: 'soapUrl', label: 'SOAP-эндпоинт (необязательно)',        type: 'text' },
+      { key: 'restUrl', label: 'REST-база /v1 (необязательно)',        type: 'text' }
     ],
 
     // оставляем для обратной совместимости (раньше читалось снаружи)
@@ -157,7 +159,7 @@
 
   /* SOAP 1.1: SPARK.GetCompanyShortReport / GetCompanyExtendedReport по ИНН. */
   async function soapCall(doFetch, op, inn, auth, creds, cfg) {
-    var url = baseHost(creds, SOAP_ENDPOINT);
+    var url = pickSoapUrl(creds, SOAP_ENDPOINT);
     var envelope =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"' +
@@ -191,7 +193,7 @@
 
   /* REST-шлюз SPARK (современная альтернатива SOAP): GET /v1/<Op>?inn=… */
   async function restCall(doFetch, op, inn, auth, creds, cfg) {
-    var base = baseHost(creds, REST_BASE);
+    var base = pickRestUrl(creds, REST_BASE);
     var url = base + '/' + op + '?inn=' + encodeURIComponent(inn);
     var resp = await fetchWithRetry(doFetch, url, {
       method: 'GET',
@@ -274,6 +276,46 @@
       return /\.asmx$/i.test(h) ? h : h + '/iface/Spark.asmx';
     }
     return /\/v\d+$/i.test(h) ? h : h + '/v1';
+  }
+
+  /* Принимаем только абсолютные http(s)-URL — иначе игнорируем (битый/левый
+     ввод не должен подменять боевой эндпоинт). Возвращает очищенный URL или ''. */
+  function validUrl(v) {
+    var s = String(v == null ? '' : v).trim();
+    if (!/^https?:\/\/\S+$/i.test(s)) return '';
+    return s.replace(/\/+$/, '');
+  }
+
+  /* Чистый выбор SOAP-эндпоинта:
+       creds.soapUrl (валидный http(s)) → creds.host (через baseHost) → fallback.
+     fallback по умолчанию — боевая константа SOAP_ENDPOINT. */
+  function pickSoapUrl(creds, fallback) {
+    var fb = fallback || SOAP_ENDPOINT;
+    var explicit = validUrl(creds && creds.soapUrl);
+    if (explicit) return explicit;
+    return baseHost(creds, fb);
+  }
+
+  /* Чистый выбор REST-базы (/v1):
+       creds.restUrl (валидный http(s)) → creds.host (через baseHost) → fallback.
+     fallback по умолчанию — боевая константа REST_BASE. */
+  function pickRestUrl(creds, fallback) {
+    var fb = fallback || REST_BASE;
+    var explicit = validUrl(creds && creds.restUrl);
+    if (explicit) return explicit;
+    return baseHost(creds, fb);
+  }
+
+  /* Экспортируем ЧИСТЫЕ хелперы выбора URL на window — только для тестов/диагностики.
+     Это НЕ SensorApp.* (контракт интеграции не трогаем). Без внешних запросов. */
+  if (typeof window !== 'undefined') {
+    window.SparkEndpoints = {
+      SOAP_ENDPOINT: SOAP_ENDPOINT,
+      REST_BASE: REST_BASE,
+      pickSoapUrl: pickSoapUrl,
+      pickRestUrl: pickRestUrl,
+      isValidUrl: function (v) { return !!validUrl(v); }
+    };
   }
 
   /* ════════════════════════ НОРМАЛИЗАЦИЯ ════════════════════════ */

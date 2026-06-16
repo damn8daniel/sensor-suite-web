@@ -26,7 +26,10 @@ SensorApp.register({
       run(){ const t=document.querySelector('[data-doc-tab="gen"]'); if(t) t.click();
         const m=document.querySelector('[data-doc-mode="packages"]'); if(m) m.click(); } },
     { id:'history', title:'История генераций', hint:'Документы · журнал',
-      keywords:['журнал','лог'], run(){ const t=document.querySelector('[data-doc-tab="history"]'); if(t) t.click(); } }
+      keywords:['журнал','лог'], run(){ const t=document.querySelector('[data-doc-tab="history"]'); if(t) t.click(); } },
+    { id:'outnum', title:'Журнал исходящих — номера', hint:'Документы · реестр исходящих',
+      keywords:['исходящие','номер','реестр','нумерация','журнал','outgoing'],
+      run(){ const t=document.querySelector('[data-doc-tab="outnum"]'); if(t) t.click(); } }
   ],
 
   mount(root, ctx){
@@ -34,6 +37,13 @@ SensorApp.register({
     const seed = (ctx.data.placeholders && ctx.data.placeholders.fields) || [];
     const HKEY = 'documents_history';
     const DKEY = 'documents_draft';
+    // Реестр нумерации исходящих (идея #9, волна 1). Автономный слой данных:
+    // persist журнала живёт в самом SensorNumbering (ключ outgoing_log в SensorStore).
+    // Может отсутствовать в урезанной сборке/тестах без numbering.js — тогда вкладку
+    // «Журнал исходящих» НЕ показываем (деградация без throw), остальной модуль цел.
+    const Numbering = (window.SensorNumbering && typeof window.SensorNumbering === 'object') ? window.SensorNumbering : null;
+    const NMASK_KEY = 'documents_outnum_mask';     // выбранная маска (UI-настройка)
+    const NPREFIX_KEY = 'documents_outnum_prefix';  // последний префикс (UI-настройка)
 
     /* ======================================================================
        1. МОРФОЛОГИЯ — склонение ФИО (родительный/дательный/творительный)
@@ -273,7 +283,11 @@ SensorApp.register({
       }
       return null;
     }
-    function innChecksum(inn){
+    // Контрольная сумма ИНН — единый источник: window.SensorValidators._innChecksum.
+    // Локальный алгоритм оставлен как фолбэк ровно на случай, когда библиотека
+    // недоступна (изоляция в каком-то тесте) — поведение и формат сообщений в
+    // validateValue не меняются (см. строку 'ИНН: неверная контрольная сумма').
+    function innChecksumLocal(inn){
       const d = inn.split('').map(Number);
       const c = (w) => w.reduce((s,k,i)=>s + k*d[i], 0) % 11 % 10;
       if (inn.length === 10) return c([2,4,10,3,5,9,4,6,8]) === d[9];
@@ -282,6 +296,11 @@ SensorApp.register({
         return n11 === d[10] && n12 === d[11];
       }
       return false;
+    }
+    function innChecksum(inn){
+      const V = (typeof window !== 'undefined') && window.SensorValidators;
+      if (V && typeof V._innChecksum === 'function') return V._innChecksum(inn);
+      return innChecksumLocal(inn);
     }
     // нормализация даты ISO → ДД.ММ.ГГГГ для вывода
     function normDate(v){
@@ -378,11 +397,17 @@ SensorApp.register({
        ====================================================================== */
     root.innerHTML = `<div id="doc-tabs"></div>`;
 
-    const tabs = U.tabs([
+    const tabItems = [
       { id:'gen', label:'Генератор', icon:'📝', render: panel => { panel.innerHTML = ''; panel.appendChild(buildGen()); } },
-      { id:'ref', label:'Справочник полей', icon:'📚', count: seed.length, render: panel => { panel.innerHTML = buildRef(); bindRef(panel); } },
-      { id:'history', label:'История', icon:'🕘', count: load().length, render: panel => { panel.innerHTML = ''; panel.appendChild(buildHistory()); } }
-    ], { variant:'underline', store:'documents' });
+      { id:'ref', label:'Справочник полей', icon:'📚', count: seed.length, render: panel => { panel.innerHTML = buildRef(); bindRef(panel); } }
+    ];
+    // вкладка «Журнал исходящих» — только при наличии слоя SensorNumbering
+    if (Numbering){
+      tabItems.push({ id:'outnum', label:'Журнал исходящих', icon:'🔢', count: outnumCount(),
+        render: panel => { panel.innerHTML = ''; panel.appendChild(buildOutNum()); } });
+    }
+    tabItems.push({ id:'history', label:'История', icon:'🕘', count: load().length, render: panel => { panel.innerHTML = ''; panel.appendChild(buildHistory()); } });
+    const tabs = U.tabs(tabItems, { variant:'underline', store:'documents' });
     // прокидываем data-атрибуты на кнопки табов (для actions)
     [...tabs.bar.children].forEach(b => b.setAttribute('data-doc-tab', b.dataset.id));
     root.querySelector('#doc-tabs').appendChild(tabs.el);
@@ -626,6 +651,12 @@ SensorApp.register({
         <h3>Состав пакета <span class="badge">${tplCount || p.docs.length}</span></h3>
         <ul class="doc-pkg-docs" style="margin:6px 0 0;padding-left:18px;line-height:1.9">${docList}</ul>
       </div>`;
+
+      // карточка «Предпросмотр (как на бумаге)» — рендер выбранного документа пакета
+      // через движок window.SensorDocx (docx-preview + подсветка/заполнение полей +
+      // живая типографика). В тестовой среде (нет docx-preview) движок безопасно
+      // деградирует — карточка покажет аккуратную заметку и не упадёт.
+      html += ucPaperPreviewCard(p);
       html += `<div class="card doc-actions">
         <div class="btn-row">
           <button class="btn primary" id="doc-pkg-gen" ${tplCount?'':'disabled title="Мастер-шаблоны пакета не загружены"'}>⤓ Сгенерировать пакет</button>
@@ -639,20 +670,24 @@ SensorApp.register({
 
       body.innerHTML = html;
 
+      // живой предпросмотр «как на бумаге» (движок SensorDocx). Заводим ДО привязки
+      // input-событий, чтобы их обработчики могли толкать значения в превью.
+      const paper = ucWirePaperPreview(body, p, pkgToks);
+
       // события
       ucWireDeclension(body, pkgToks);
       const onAny = U.debounce(() => { ucUpdateProgress(body); ucSaveDraft(body); }, 300);
       body.querySelectorAll('[data-tok]').forEach(inp => {
-        inp.addEventListener('input', () => { ucLiveValidate(body, inp); onAny(); });
+        inp.addEventListener('input', () => { ucLiveValidate(body, inp); onAny(); if (paper) paper.pushValues(); });
         inp.addEventListener('blur', () => ucLiveValidate(body, inp, true));
       });
-      const gen = body.querySelector('#doc-pkg-gen'); if (gen) gen.onclick = () => ucGenerate(body, p);
-      body.querySelector('#doc-pkg-demo').onclick = () => { ucFillDemo(body, p); ucUpdateProgress(body); ucSaveDraft(body); };
+      const gen = body.querySelector('#doc-pkg-gen'); if (gen) gen.onclick = () => ucGenerate(body, p, paper);
+      body.querySelector('#doc-pkg-demo').onclick = () => { ucFillDemo(body, p); ucUpdateProgress(body); ucSaveDraft(body); if (paper) paper.pushValues(); };
       body.querySelector('#doc-pkg-clear').onclick = async () => {
         const ok = await U.confirm({ title:'Очистить форму?', message:'Все введённые значения пакета будут удалены.', ok:'Очистить', danger:true });
         if (!ok) return;
         body.querySelectorAll('[data-tok]').forEach(i => { i.value=''; i.dataset.touched=''; i.classList.remove('doc-auto-filled'); ucClearError(body, i.dataset.tok); });
-        ucUpdateProgress(body); ucSaveDraft(body);
+        ucUpdateProgress(body); ucSaveDraft(body); if (paper) paper.pushValues();
       };
       ucUpdateProgress(body);
       ctx.store.set(PKEY, { pkg:id, values: ucCollect(body) });
@@ -793,19 +828,26 @@ SensorApp.register({
     }
 
     /* --- генерация пакета: каждый мастер-шаблон → docxtemplater; сборка в .zip --- */
-    function ucGenerate(body, p){
+    function ucGenerate(body, p, paper){
       if (!p.templates.length){ ctx.toast('Мастер-шаблоны пакета не загружены','err'); return; }
       const v = ucValidateAll(body);
       if (!v.ok){ if (v.firstBad) v.firstBad.focus(); ctx.toast(`Исправьте ${v.count} ${plural(v.count,'поле','поля','полей')} с ошибками`,'err'); return; }
-      const run = () => ucProduce(body, p);
+      const run = () => ucProduce(body, p, paper);
       if (v.empties){
         U.confirm({ title:'Есть незаполненные поля', message:`Не заполнено ${v.empties} ${plural(v.empties,'поле','поля','полей')}. Сгенерировать пакет? Пустые поля останутся пустыми.`, ok:'Сгенерировать' })
           .then(ok => { if (ok) run(); });
       } else run();
     }
 
-    function ucProduce(body, p){
+    function ucProduce(body, p, paper){
       const data = ucCollect(body);
+      // типографика из карточки предпросмотра (если задана) — единый набор на весь пакет
+      const typo = (paper && typeof paper.getTypography === 'function') ? paper.getTypography() : null;
+      const hasTypo = !!(typo && (typo.global && Object.keys(typo.global).length || (typo.perField && Object.keys(typo.perField).length)));
+      // движок умеет встраивать типографику в .docx; если нет — прежний путь (PizZip)
+      const SDX = window.SensorDocx;
+      const canBuild = !!(SDX && typeof SDX.buildDocx === 'function' && SDX.available && SDX.available().build);
+      const useEngine = canBuild && hasTypo;
       const prog = body.querySelector('#doc-pkg-progress');
       const total = p.templates.length;
       const setProg = (n, msg) => {
@@ -826,29 +868,50 @@ SensorApp.register({
       };
       const safe = (s) => String(s||'документ').replace(/[\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();
 
-      try{
-        p.templates.forEach((t, i) => {
+      // Прежний синхронный путь (фолбэк): PizZip + docxtemplater, без типографики.
+      // Используется, когда движок недоступен (available().build===false) или
+      // типографика не задана, а также при ЛЮБОЙ ошибке движка по документу.
+      function legacyBuild(t){
+        const tokens = t.tokens || [];
+        if (!tokens.length){
+          const zip = new PizZip(t.b64, { base64:true });
+          return zip.generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+        }
+        const zip = new PizZip(t.b64, { base64:true });
+        const doc = new window.docxtemplater(zip, {
+          paragraphLoop:true, linebreaks:true,
+          delimiters:{ start:'{', end:'}' },
+          nullGetter:()=> ''
+        });
+        doc.render(data);
+        return doc.getZip().generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      }
+
+      // Сборка одного документа → Promise<uint8array>. Через движок (с типографикой),
+      // иначе — прежним синхронным путём. Графические бланки (нет токенов) всегда
+      // идут прежним путём: подставлять нечего, типографика к ним неприменима.
+      function buildOne(t){
+        const tokens = t.tokens || [];
+        if (useEngine && tokens.length){
+          return SDX.buildDocx({ b64: t.b64, values: data, typography: typo })
+            .then(blob => blob.arrayBuffer())
+            .then(ab => new Uint8Array(ab))
+            .catch(() => legacyBuild(t)); // отказ движка → прежний путь, без падения
+        }
+        return Promise.resolve(legacyBuild(t));
+      }
+
+      // Последовательная сборка (сохраняем порядок и прогресс) через цепочку промисов.
+      let chain = Promise.resolve();
+      p.templates.forEach((t, i) => {
+        chain = chain.then(() => {
           setProg(i, `Сборка: ${t.title || t.file || ('документ '+(i+1))}…`);
           const base = safe(t.title || (t.file||'').replace(/^Копия\s+/i,'').replace(/\.docx$/i,'') || ('документ '+(i+1))) + '.docx';
-          let content;
-          const tokens = t.tokens || [];
-          if (!tokens.length){
-            // графический бланк — включаем как есть (только декодируем base64)
-            const zip = new PizZip(t.b64, { base64:true });
-            content = zip.generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-          } else {
-            const zip = new PizZip(t.b64, { base64:true });
-            const doc = new window.docxtemplater(zip, {
-              paragraphLoop:true, linebreaks:true,
-              delimiters:{ start:'{', end:'}' },
-              nullGetter:()=> ''
-            });
-            doc.render(data);
-            content = doc.getZip().generate({ type:'uint8array', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-          }
-          built.push({ name: uniqueName(base), content });
+          return buildOne(t).then(content => { built.push({ name: uniqueName(base), content }); });
         });
+      });
 
+      chain.then(() => {
         const pkgTitle = safe(p.short || p.name || 'Пакет');
         if (built.length === 1){
           setProg(total, 'Готово');
@@ -864,13 +927,237 @@ SensorApp.register({
         if (prog) prog.hidden = true;
         ctx.toast(`Пакет «${p.short}» сгенерирован: ${built.length} ${plural(built.length,'документ','документа','документов')} ✓`,'ok');
         pushHistory({ name: p.name, fields: Object.keys(data).filter(k=>String(data[k]||'').trim()).length, preset: 'Пакет УЦ: '+p.short, values: data, out: built.length>1?`${pkgTitle} — документы.zip`:built[0].name, docs: built.length });
-      }catch(err){
+      }).catch(err => {
         if (prog) prog.hidden = true;
-        ctx.toast('Ошибка генерации пакета: '+(err.message||err),'err');
-      }finally{
+        ctx.toast('Ошибка генерации пакета: '+(err && err.message||err),'err');
+      }).then(() => {
         if (gen){ gen.disabled = false; }
-      }
+      });
     }
+
+    /* ----------------------------------------------------------------------
+       7a-ter. КАРТОЧКА «ПРЕДПРОСМОТР (КАК НА БУМАГЕ)»
+       Рендер выбранного документа пакета через движок window.SensorDocx:
+         • выбор документа (только токенные шаблоны — графические бланки нечем
+           заполнять/превьюшить);
+         • панель типографики: глобально + по-польно (шрифт/кегль/жирность/
+           курсив/цвет);
+         • живое заполнение из формы пакета (handle.update) — без ре-рендера;
+         • безопасная деградация: нет docx-preview (тесты/jsdom) → движок отдаёт
+           заметку, карточка остаётся целой, ничего не падает.
+       Никаких внешних запросов — движок работает на вендорных window.*.
+       ---------------------------------------------------------------------- */
+
+    // Доступность движка предпросмотра (для условной отрисовки панели).
+    function sdxPreviewable(){
+      try { const a = window.SensorDocx && window.SensorDocx.available && window.SensorDocx.available(); return !!(a && a.preview); }
+      catch(e){ return false; }
+    }
+    // Справочники типографики из движка (со страховочными значениями для тестов).
+    function sdxFonts(){ const f = window.SensorDocx && window.SensorDocx.FONTS; return (Array.isArray(f) && f.length) ? f : ['Times New Roman','Arial','Calibri']; }
+    function sdxSizes(){ const s = window.SensorDocx && window.SensorDocx.SIZES; return (Array.isArray(s) && s.length) ? s : [10,11,12,14,16]; }
+
+    function ucPaperPreviewCard(p){
+      // только токенные шаблоны: графические бланки нечем заполнять
+      const docs = (p.templates || []).filter(t => (t.tokens||[]).length);
+      if (!docs.length){
+        return `<div class="card doc-pv-card" id="doc-pv-card">
+          <h3>Предпросмотр (как на бумаге)</h3>
+          ${U.empty('📄','В этом пакете нет документов с полями — предпросмотр на бумаге недоступен (графические бланки выгружаются как есть).')}
+        </div>`;
+      }
+      const fonts = sdxFonts(), sizes = sdxSizes();
+      const docOpts = docs.map((t, i) =>
+        `<option value="${i}">${U.escape(t.title || t.file || ('документ '+(i+1)))}</option>`).join('');
+      const fontOpts = (sel) => fonts.map(f => `<option value="${U.escape(f)}"${f===sel?' selected':''}>${U.escape(f)}</option>`).join('');
+      const sizeOpts = (sel) => sizes.map(s => `<option value="${s}"${s===sel?' selected':''}>${s} pt</option>`).join('');
+
+      // токены выбранного документа — для селектора «по-польной» типографики
+      const firstToks = docs[0].tokens || [];
+      const perFieldOpts = firstToks.map(tk => `<option value="${U.escape(tk)}">{${U.escape(tk)}}</option>`).join('');
+
+      const note = sdxPreviewable() ? '' :
+        `<p class="hint" id="doc-pv-degraded" style="margin:0 0 10px">Визуальный предпросмотр доступен в браузере приложения. Здесь (тестовая/ограниченная среда) показывается текстовая заметка движка — генерация .docx работает в обычном режиме.</p>`;
+
+      return `<div class="card doc-pv-card" id="doc-pv-card">
+        <h3>Предпросмотр (как на бумаге) <span class="badge info">${docs.length} ${plural(docs.length,'документ','документа','документов')}</span></h3>
+        <p class="hint">Выберите документ пакета — он отрисуется как на листе, поля подсветятся и заполнятся вашими значениями вживую. Настройте типографику (общую и по конкретным полям) — она попадёт и в итоговый .docx.</p>
+        ${note}
+        <div class="field" style="margin:0 0 10px">
+          <label>Документ для предпросмотра</label>
+          <select id="doc-pv-doc">${docOpts}</select>
+        </div>
+
+        <div class="doc-pv-typo" id="doc-pv-typo" style="display:grid;gap:10px;margin:0 0 12px">
+          <div class="card" style="margin:0;padding:10px 12px">
+            <b style="font-size:13px">Общая типографика</b>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px">
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Шрифт
+                <select id="doc-pv-g-font"><option value="">— по шаблону —</option>${fontOpts(null)}</select></label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Кегль
+                <select id="doc-pv-g-size"><option value="">— по шаблону —</option>${sizeOpts(null)}</select></label>
+              <label style="display:flex;gap:5px;align-items:center;font-size:12px"><input type="checkbox" id="doc-pv-g-bold"> Жирный</label>
+              <label style="display:flex;gap:5px;align-items:center;font-size:12px"><input type="checkbox" id="doc-pv-g-italic"> Курсив</label>
+            </div>
+          </div>
+          <div class="card" style="margin:0;padding:10px 12px">
+            <b style="font-size:13px">Типографика поля</b>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px">
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Поле
+                <select id="doc-pv-pf-tok">${perFieldOpts}</select></label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Шрифт
+                <select id="doc-pv-pf-font"><option value="">— как общая —</option>${fontOpts(null)}</select></label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Кегль
+                <select id="doc-pv-pf-size"><option value="">— как общая —</option>${sizeOpts(null)}</select></label>
+              <label style="display:flex;gap:5px;align-items:center;font-size:12px"><input type="checkbox" id="doc-pv-pf-bold"> Жирный</label>
+              <label style="display:flex;gap:5px;align-items:center;font-size:12px"><input type="checkbox" id="doc-pv-pf-italic"> Курсив</label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:12px">Цвет
+                <input type="color" id="doc-pv-pf-color" value="#000000"></label>
+              <button class="btn ghost sm" type="button" id="doc-pv-pf-reset" title="Сбросить типографику поля">Сброс поля</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="doc-pv-canvas" id="doc-pv-canvas" tabindex="-1"
+             style="max-height:520px;overflow:auto;background:#f1f5f9;border:1px solid var(--line,#e2e8f0);border-radius:8px;padding:14px"
+             role="region" aria-label="Предпросмотр документа на бумаге"></div>
+      </div>`;
+    }
+
+    // Завести живой предпросмотр. Возвращает контроллер { pushValues, getTypography }
+    // или null, если карточки нет / нет документов с полями.
+    function ucWirePaperPreview(body, p, pkgToks){
+      const card = body.querySelector('#doc-pv-card');
+      if (!card) return null;
+      const docSel = card.querySelector('#doc-pv-doc');
+      const canvas = card.querySelector('#doc-pv-canvas');
+      if (!docSel || !canvas) return null; // карточка пустого состояния (нет токенных шаблонов)
+
+      const docs = (p.templates || []).filter(t => (t.tokens||[]).length);
+      // typography: { global:{font,sizePt,bold,italic}, perField:{token:{...}} }
+      const typo = { global: {}, perField: {} };
+      let handle = null;
+      let curIdx = 0;
+
+      // собрать значения формы пакета в карту { token: value }
+      function values(){ return ucCollect(body); }
+
+      // обновить список токенов в селекторе «поле» под текущий документ
+      function refreshPerFieldTokens(){
+        const pfTok = card.querySelector('#doc-pv-pf-tok');
+        if (!pfTok) return;
+        const toks = (docs[curIdx] && docs[curIdx].tokens) || [];
+        pfTok.innerHTML = toks.map(tk => `<option value="${U.escape(tk)}">{${U.escape(tk)}}</option>`).join('');
+        syncPerFieldControls();
+      }
+
+      // отрисовать выбранный документ через движок (с безопасной деградацией)
+      function render(){
+        const SDX = window.SensorDocx;
+        if (!SDX || typeof SDX.renderPreview !== 'function'){
+          canvas.innerHTML = '<div class="sd-note" role="note" style="padding:14px;color:var(--muted,#64748b)">Движок предпросмотра не подключён.</div>';
+          handle = null; return;
+        }
+        const t = docs[curIdx];
+        Promise.resolve(SDX.renderPreview({
+          b64: t.b64,
+          container: canvas,
+          values: values(),
+          typography: typo,
+          onField: (tok) => { // клик по полю в превью → фокус на инпут формы
+            const inp = body.querySelector(`[data-tok="${cssEsc(tok)}"]`);
+            if (inp){ try{ inp.focus(); inp.scrollIntoView({ block:'center', behavior:'smooth' }); }catch(e){} }
+            // и выбрать это поле в панели «по-польной» типографики
+            const pfTok = card.querySelector('#doc-pv-pf-tok');
+            if (pfTok && [...pfTok.options].some(o => o.value === tok)){ pfTok.value = tok; syncPerFieldControls(); }
+          }
+        })).then(h => { handle = h; }).catch(() => { handle = null; });
+      }
+
+      // протолкнуть актуальные значения формы в превью без ре-рендера
+      function pushValues(){ if (handle && handle.update) { try{ handle.update({ values: values() }); }catch(e){} } }
+      // протолкнуть типографику в превью
+      function pushTypo(){ if (handle && handle.update){ try{ handle.update({ typography: typo }); }catch(e){} } }
+
+      // --- глобальная типографика ---
+      const gFont = card.querySelector('#doc-pv-g-font');
+      const gSize = card.querySelector('#doc-pv-g-size');
+      const gBold = card.querySelector('#doc-pv-g-bold');
+      const gItalic = card.querySelector('#doc-pv-g-italic');
+      function readGlobal(){
+        const g = {};
+        if (gFont && gFont.value) g.font = gFont.value;
+        if (gSize && gSize.value) g.sizePt = Number(gSize.value);
+        if (gBold && gBold.checked) g.bold = true;
+        if (gItalic && gItalic.checked) g.italic = true;
+        typo.global = g;
+        pushTypo();
+      }
+      [gFont, gSize].forEach(el => el && el.addEventListener('change', readGlobal));
+      [gBold, gItalic].forEach(el => el && el.addEventListener('change', readGlobal));
+
+      // --- по-польная типографика ---
+      const pfTok = card.querySelector('#doc-pv-pf-tok');
+      const pfFont = card.querySelector('#doc-pv-pf-font');
+      const pfSize = card.querySelector('#doc-pv-pf-size');
+      const pfBold = card.querySelector('#doc-pv-pf-bold');
+      const pfItalic = card.querySelector('#doc-pv-pf-italic');
+      const pfColor = card.querySelector('#doc-pv-pf-color');
+      const pfReset = card.querySelector('#doc-pv-pf-reset');
+
+      // отразить в контролах сохранённую типографику выбранного поля
+      function syncPerFieldControls(){
+        const tok = pfTok && pfTok.value;
+        const t = (tok && typo.perField[tok]) || {};
+        if (pfFont) pfFont.value = t.font || '';
+        if (pfSize) pfSize.value = t.sizePt != null ? String(t.sizePt) : '';
+        if (pfBold) pfBold.checked = !!t.bold;
+        if (pfItalic) pfItalic.checked = !!t.italic;
+        if (pfColor) pfColor.value = t.color || '#000000';
+      }
+      function readPerField(){
+        const tok = pfTok && pfTok.value;
+        if (!tok) return;
+        const t = {};
+        if (pfFont && pfFont.value) t.font = pfFont.value;
+        if (pfSize && pfSize.value) t.sizePt = Number(pfSize.value);
+        if (pfBold && pfBold.checked) t.bold = true;
+        if (pfItalic && pfItalic.checked) t.italic = true;
+        // цвет учитываем, только если отличается от чёрного по умолчанию
+        if (pfColor && pfColor.value && pfColor.value.toLowerCase() !== '#000000') t.color = pfColor.value;
+        if (Object.keys(t).length) typo.perField[tok] = t; else delete typo.perField[tok];
+        pushTypo();
+      }
+      if (pfTok) pfTok.addEventListener('change', syncPerFieldControls);
+      [pfFont, pfSize].forEach(el => el && el.addEventListener('change', readPerField));
+      [pfBold, pfItalic].forEach(el => el && el.addEventListener('change', readPerField));
+      if (pfColor) pfColor.addEventListener('input', readPerField);
+      if (pfReset) pfReset.onclick = () => {
+        const tok = pfTok && pfTok.value;
+        if (tok) delete typo.perField[tok];
+        syncPerFieldControls(); pushTypo();
+      };
+
+      // смена документа → полный ре-рендер + обновление списка полей
+      docSel.addEventListener('change', () => {
+        curIdx = Math.max(0, Math.min(docs.length - 1, Number(docSel.value) || 0));
+        refreshPerFieldTokens();
+        render();
+      });
+
+      // первичная инициализация
+      refreshPerFieldTokens();
+      render();
+
+      return {
+        pushValues,
+        getTypography(){ return { global: assignTypo({}, typo.global), perField: clonePerField(typo.perField) }; }
+      };
+    }
+
+    // мелкие клон-помощники для безопасной передачи типографики наружу
+    function assignTypo(dst, src){ src = src || {}; for (const k in src) if (Object.prototype.hasOwnProperty.call(src,k)) dst[k]=src[k]; return dst; }
+    function clonePerField(pf){ const out = {}; pf = pf || {}; for (const k in pf) if (Object.prototype.hasOwnProperty.call(pf,k)) out[k] = assignTypo({}, pf[k]); return out; }
 
     function badgeEnv(){ return ''; }
 
@@ -1510,6 +1797,238 @@ SensorApp.register({
           setTimeout(()=>{ const bar = root.querySelector('#doc-presets'); if (bar && pk) applyPreset(pk, bar); }, 40);
         };
       });
+    }
+
+    /* ----------------------------------------------------------------------
+       7b-bis. ВКЛАДКА «ЖУРНАЛ ИСХОДЯЩИХ» (интеграция SensorNumbering, идея #9)
+       Поток: префикс + маска → живое превью следующего номера
+       (Numbering.next + Numbering.format) → «Зарегистрировать»
+       (Numbering.register, защита от дубля → toast) → таблица журнала
+       (Numbering.list, сортировка по дате) с «Печать» (ctx.ui.printTable) и
+       «Копировать номер» (ctx.ui.copy). Хранение — в самом SensorNumbering
+       (ключ outgoing_log в SensorStore), здесь НЕ дублируем. Всё экранируем.
+       ---------------------------------------------------------------------- */
+    // безопасно достать журнал (Numbering может отсутствовать)
+    function outnumList(){
+      if (!Numbering || typeof Numbering.list !== 'function') return [];
+      try { const a = Numbering.list(); return Array.isArray(a) ? a : []; }
+      catch(e){ return []; }
+    }
+    function outnumCount(){ return outnumList().length; }
+    // дата по умолчанию для превью/регистрации — сегодня в формате YYYY-MM-DD
+    function todayISO(){
+      const d = new Date();
+      const p = n => (n < 10 ? '0' : '') + n;
+      return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate());
+    }
+    // нормализация даты записи журнала к ДД.ММ.ГГГГ для отображения (хранится ISO)
+    function outnumDateView(v){
+      const val = String(v||'').trim();
+      const m = val.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m) return `${m[3]}.${m[2]}.${m[1]}`;
+      return normDate(val);
+    }
+    // сортировка журнала по дате (свежие сверху); вторичный ключ — seq по убыванию
+    function outnumSorted(){
+      return outnumList().slice().sort((a, b) => {
+        const da = String((a && a.date) || ''), db = String((b && b.date) || '');
+        if (da !== db) return da < db ? 1 : -1;            // дата по убыванию
+        return (+(b && b.seq) || 0) - (+(a && a.seq) || 0); // затем seq по убыванию
+      });
+    }
+    // текущая маска: сохранённая в store либо DEFAULT_MASK слоя
+    function outnumMask(){
+      const def = (Numbering && Numbering.DEFAULT_MASK) || '№ {seq}/{YY} от {DD.MM.YYYY}';
+      const saved = ctx.store.get(NMASK_KEY, null);
+      return (typeof saved === 'string' && saved.trim()) ? saved : def;
+    }
+
+    function buildOutNum(){
+      const wrap = document.createElement('div');
+      if (!Numbering){ // подстраховка: вкладку и так не создаём без слоя
+        wrap.innerHTML = U.card('Журнал исходящих','',
+          U.empty('🔢','Слой нумерации исходящих не подключён в этой сборке.'));
+        return wrap;
+      }
+
+      const prefix0 = String(ctx.store.get(NPREFIX_KEY, '') || '');
+      const mask0 = outnumMask();
+      const defMask = (Numbering.DEFAULT_MASK) || '№ {seq}/{YY} от {DD.MM.YYYY}';
+
+      // --- карточка регистрации: префикс, маска (живое превью), реквизиты ---
+      const head = document.createElement('div');
+      head.className = 'card';
+      head.innerHTML =
+        `<h3>Новый исходящий номер</h3>
+         <p class="hint">Реестр исходящих документов учебного центра: номер присваивается по счётчику за год и префикс. Данные хранятся локально (журнал <code class="mono">outgoing_log</code>).</p>
+         <div class="grid cols-2">
+           <div class="field">
+             <label for="outnum-prefix">Префикс <span class="tok">буквенный индекс серии</span></label>
+             <input id="outnum-prefix" type="text" placeholder="ИСХ, ПБ, АЭ…" value="${U.escape(prefix0)}" autocomplete="off" spellcheck="false">
+           </div>
+           <div class="field">
+             <label for="outnum-date">Дата документа</label>
+             <input id="outnum-date" type="date" value="${U.escape(todayISO())}">
+           </div>
+         </div>
+         <div class="field">
+           <label for="outnum-mask">Маска номера <span class="tok">плейсхолдеры {seq} {YYYY} {YY} {MM} {DD} {prefix}</span></label>
+           <input id="outnum-mask" type="text" value="${U.escape(mask0)}" autocomplete="off" spellcheck="false">
+           <p class="hint" style="margin:6px 0 0">По умолчанию: <code class="mono">${U.escape(defMask)}</code></p>
+         </div>
+         <div class="field">
+           <label for="outnum-title">Заголовок / тема документа</label>
+           <input id="outnum-title" type="text" placeholder="Напр.: Уведомление в Рособрнадзор" autocomplete="off">
+         </div>
+         <div class="field">
+           <label for="outnum-cp">Контрагент / адресат <span class="tok">необязательно</span></label>
+           <input id="outnum-cp" type="text" placeholder="Кому адресован документ" autocomplete="off">
+         </div>
+         <div class="card" style="margin:4px 0 0;padding:12px 14px;background:var(--panel-2)">
+           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+             <span class="hint" style="margin:0">Следующий номер:</span>
+             <b id="outnum-preview" class="mono" style="font-size:15px">—</b>
+             <span class="badge info" id="outnum-seq" title="Порядковый номер за год+префикс">seq —</span>
+           </div>
+         </div>
+         <div class="btn-row" style="margin-top:12px">
+           <button class="btn primary" id="outnum-reg" type="button">＋ Зарегистрировать</button>
+           <span class="spacer" style="flex:1"></span>
+           <button class="btn ghost sm" id="outnum-reset-mask" type="button" title="Вернуть маску по умолчанию">Маска по умолчанию</button>
+         </div>`;
+      wrap.appendChild(head);
+
+      // --- карточка журнала: таблица + действия ---
+      const body = document.createElement('div');
+      body.id = 'outnum-log';
+      body.className = 'card';
+      wrap.appendChild(body);
+
+      const prefixInp = head.querySelector('#outnum-prefix');
+      const dateInp = head.querySelector('#outnum-date');
+      const maskInp = head.querySelector('#outnum-mask');
+      const titleInp = head.querySelector('#outnum-title');
+      const cpInp = head.querySelector('#outnum-cp');
+      const preview = head.querySelector('#outnum-preview');
+      const seqBadge = head.querySelector('#outnum-seq');
+
+      // живое превью следующего номера: next(prefix,date) + format(...)
+      function refreshPreview(){
+        const prefix = String(prefixInp.value || '').trim();
+        const date = String(dateInp.value || '').trim() || todayISO();
+        const mask = String(maskInp.value || '').trim() || defMask;
+        let seq = 1;
+        try { seq = Numbering.next(prefix, date); } catch(e){ seq = 1; }
+        let num = '';
+        try { num = Numbering.format({ prefix: prefix, seq: seq, date: date, mask: mask }); } catch(e){ num = ''; }
+        preview.textContent = num || '—';   // textContent — без HTML-инъекции
+        seqBadge.textContent = 'seq ' + seq;
+      }
+
+      // регистрация номера: register() с защитой от дубля → toast
+      function doRegister(){
+        const prefix = String(prefixInp.value || '').trim();
+        const date = String(dateInp.value || '').trim() || todayISO();
+        const mask = String(maskInp.value || '').trim() || defMask;
+        const title = String(titleInp.value || '').trim();
+        const cp = String(cpInp.value || '').trim();
+        const seq = Numbering.next(prefix, date);
+        let rec = null;
+        try {
+          rec = Numbering.register({ prefix: prefix, seq: seq, date: date, title: title, counterparty: cp, mask: mask });
+        } catch(e){ rec = null; }
+        if (!rec){
+          ctx.toast('Такой номер уже зарегистрирован — дубль не добавлен','err');
+          renderLog(); refreshPreview();
+          return;
+        }
+        ctx.store.set(NPREFIX_KEY, prefix);   // запомнить префикс для удобства
+        ctx.toast('Зарегистрирован № ' + (rec.number || (prefix + ' ' + seq)) + ' ✓','ok');
+        // очистим тему/адресата под следующий документ; префикс/маску оставляем
+        titleInp.value = ''; cpInp.value = '';
+        renderLog(); refreshPreview(); syncTabCount();
+      }
+
+      // перерисовать таблицу журнала (сортировка по дате)
+      function renderLog(){
+        const list = outnumSorted();
+        if (!list.length){
+          body.innerHTML =
+            `<h3>Журнал исходящих <span class="badge">0</span></h3>` +
+            U.empty('🔢','Журнал пуст. Заполните префикс и нажмите «Зарегистрировать» — номер появится здесь.');
+          return;
+        }
+        const rows = list.map(e => {
+          const num = String((e && e.number) || '');
+          return `<tr>
+            <td class="mono">${U.escape(num)}</td>
+            <td>${U.escape(outnumDateView(e && e.date))}</td>
+            <td>${U.escape(String((e && e.prefix) || '—'))}</td>
+            <td>${U.escape(String((e && e.title) || '')) || '<span class="muted">—</span>'}</td>
+            <td>${U.escape(String((e && e.counterparty) || '')) || '<span class="muted">—</span>'}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn ghost sm" type="button" data-outnum-copy="${U.escape(num)}" title="Скопировать номер">⧉ номер</button>
+            </td>
+          </tr>`;
+        }).join('');
+        body.innerHTML =
+          `<h3>Журнал исходящих <span class="badge">${list.length}</span></h3>
+           <p class="hint">Зарегистрированные номера, по убыванию даты. Хранится локально.</p>
+           <div class="btn-row" style="margin-bottom:10px">
+             <button class="btn sm" id="outnum-print" type="button">🖨 Печать</button>
+           </div>
+           <div class="tbl-wrap" style="max-height:440px"><table class="tbl">
+             <thead><tr><th>Номер</th><th>Дата</th><th>Префикс</th><th>Тема</th><th>Адресат</th><th></th></tr></thead>
+             <tbody>${rows}</tbody></table></div>`;
+        // печать журнала через ctx.ui.printTable (печатает в порядке текущей сортировки)
+        const printBtn = body.querySelector('#outnum-print');
+        if (printBtn) printBtn.onclick = () => {
+          const cols = [
+            { label:'Номер', key:'number' },
+            { label:'Дата', key:'date' },
+            { label:'Префикс', key:'prefix' },
+            { label:'Тема', key:'title' },
+            { label:'Адресат', key:'counterparty' }
+          ];
+          const data = outnumSorted().map(e => ({
+            number: (e && e.number) || '',
+            date: outnumDateView(e && e.date),
+            prefix: (e && e.prefix) || '',
+            title: (e && e.title) || '',
+            counterparty: (e && e.counterparty) || ''
+          }));
+          U.printTable('Журнал исходящих документов', cols, data, {
+            subtitle: 'Сенсор · Документооборот / УЦ — реестр исходящих',
+            meta: [{ label:'Всего записей', value: String(data.length) }],
+            footer: 'Распечатано из приложения «Сенсор Suite».'
+          });
+        };
+        // копирование номера через ctx.ui.copy
+        body.querySelectorAll('[data-outnum-copy]').forEach(b => {
+          b.onclick = () => U.copy(b.dataset.outnumCopy, 'Номер скопирован ✓');
+        });
+      }
+
+      // обновить счётчик на табе (если отрисован)
+      function syncTabCount(){
+        const cnt = tabs.bar.querySelector('[data-doc-tab="outnum"] .t-count');
+        if (cnt) cnt.textContent = outnumCount();
+      }
+
+      // события: живое превью при правке префикса/даты/маски, сохранение маски
+      [prefixInp, dateInp].forEach(el => el && el.addEventListener('input', refreshPreview));
+      if (maskInp) maskInp.addEventListener('input', () => {
+        const v = String(maskInp.value || '').trim();
+        ctx.store.set(NMASK_KEY, v || defMask);
+        refreshPreview();
+      });
+      const regBtn = head.querySelector('#outnum-reg'); if (regBtn) regBtn.onclick = doRegister;
+      const resetMask = head.querySelector('#outnum-reset-mask');
+      if (resetMask) resetMask.onclick = () => { maskInp.value = defMask; ctx.store.set(NMASK_KEY, defMask); refreshPreview(); };
+
+      refreshPreview();
+      renderLog();
+      return wrap;
     }
 
     /* ----------------------------------------------------------------------

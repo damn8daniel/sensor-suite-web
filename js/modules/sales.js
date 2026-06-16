@@ -547,11 +547,79 @@ SensorApp.register({
     /* =====================================================================
        Вкладка «Возражения» — живой поиск с подсветкой + 21 приём дожима
        ===================================================================== */
+    /* ---- слой тегов этап/продукт поверх банка (js/data/objections-tags.js) ----
+       Деградация: если слой не подключён (нет window.SensorObjectionTags) —
+       фильтры по этапу/продукту не показываем, список работает как раньше, без
+       throw. Слой даёт словари stages/products и функции byStage/byProduct/all. */
+    const TAGS = (window.SensorObjectionTags && typeof window.SensorObjectionTags === 'object')
+      ? window.SensorObjectionTags : null;
+    function tagStages(){ return (TAGS && Array.isArray(TAGS.stages)) ? TAGS.stages : []; }
+    function tagProducts(){ return (TAGS && Array.isArray(TAGS.products)) ? TAGS.products : []; }
+    // карта cat → {stages[],products[]} для бейджей на карточках (копия из слоя)
+    function tagMap(){
+      if(!TAGS || typeof TAGS.all !== 'function') return {};
+      try { const m = TAGS.all(); return (m && typeof m==='object') ? m : {}; }
+      catch(_){ return {}; }
+    }
+    // множество категорий, разрешённых текущим фильтром (пересечение осей).
+    // null по оси = «Все» (без ограничения по этой оси). Возвращает Set строк cat
+    // или null, если фильтр выключен/слой недоступен (значит — показать все).
+    function allowedCats(stage, product){
+      if(!TAGS) return null;
+      let set = null; // null = пока без ограничений
+      if(stage && typeof TAGS.byStage === 'function'){
+        set = new Set(TAGS.byStage(stage) || []);
+      }
+      if(product && typeof TAGS.byProduct === 'function'){
+        const list = new Set(TAGS.byProduct(product) || []);
+        set = (set === null) ? list : new Set([...set].filter(c=>list.has(c))); // пересечение
+      }
+      return set; // null → без фильтра по тегам
+    }
+    // бейджи-теги этапов/продуктов на карточке категории
+    function catTagBadges(cat){
+      const t = tagMap()[cat];
+      if(!t) return '';
+      const chip = (txt, cls) =>
+        `<span class="badge${cls}" style="font-size:10.5px;padding:1px 7px">${esc(txt)}</span>`;
+      const stages   = Array.isArray(t.stages)   ? t.stages   : [];
+      const products = Array.isArray(t.products) ? t.products : [];
+      const parts = stages.map(s=>chip(s,' info')).concat(products.map(p=>chip(p,'')));
+      if(!parts.length) return '';
+      return `<span class="obj-tagrow" style="display:inline-flex;flex-wrap:wrap;gap:4px;margin-left:8px;vertical-align:middle">${parts.join('')}</span>`;
+    }
+
     function renderObjections(){
       const total = bank.reduce((a,g)=>a+g.responses.length,0);
+
+      // состояние фильтра тегов (persist в store, ключ obj_filter); невалидные
+      // (после смены словарей) сбрасываем в «Все».
+      const savedF = ctx.store.get('obj_filter', {}) || {};
+      let fStage   = (TAGS && savedF.stage   && tagStages().indexOf(savedF.stage)     >= 0) ? savedF.stage   : null;
+      let fProduct = (TAGS && savedF.product && tagProducts().indexOf(savedF.product) >= 0) ? savedF.product : null;
+      function saveFilter(){ ctx.store.set('obj_filter', { stage:fStage, product:fProduct }); }
+
+      // сегмент-фильтры «Этап» и «Продукт» (только если слой тегов подключён)
+      function segRow(legend, dataKey, options, current){
+        const btns = [{ v:'', label:'Все' }].concat(options.map(o=>({ v:o, label:o })))
+          .map(o=>{
+            const on = (o.v==='' && !current) || (o.v && o.v===current);
+            return `<button type="button" class="pill${on?' active':''}" role="tab" aria-selected="${on?'true':'false'}" data-seg="${esc(dataKey)}" data-val="${esc(o.v)}">${esc(o.label)}</button>`;
+          }).join('');
+        return `<div class="field" style="margin-bottom:8px">
+                  <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${esc(legend)}</div>
+                  <div class="pill-tabs" id="obj-seg-${esc(dataKey)}" role="tablist" aria-label="${esc(legend)}">${btns}</div>
+                </div>`;
+      }
+      const filtersHTML = TAGS
+        ? segRow('Этап продажи', 'stage', tagStages(), fStage) +
+          segRow('Продукт', 'product', tagProducts(), fProduct)
+        : '';
+
       body.innerHTML =
         U.card('Банк возражений',
           'Техника: ' + technique + '. Не спрашиваем «над чём подумать?» · техника «Искренность».',
+          filtersHTML +
           `<div class="field" style="margin-bottom:10px">
              <div style="position:relative">
                <input id="obj-q" placeholder="Поиск по возражению или ответу… (напр. «дорого», «директор», «почта»)" autocomplete="off" spellcheck="false" style="padding-right:34px">
@@ -582,11 +650,37 @@ SensorApp.register({
         paint();
       });
 
+      // сегмент-фильтры этап/продукт: выбор → persist → перерисовка списка.
+      // Делегирование на оба ряда; подсветка активной пилюли в своём ряду.
+      function wireSeg(dataKey, apply){
+        const row = body.querySelector('#obj-seg-'+dataKey);
+        if(!row) return;
+        row.addEventListener('click', e=>{
+          const b = e.target.closest('[data-seg="'+dataKey+'"]'); if(!b) return;
+          apply(b.dataset.val || '');
+          row.querySelectorAll('.pill').forEach(p=>{
+            const on = p===b;
+            p.classList.toggle('active', on);
+            p.setAttribute('aria-selected', on?'true':'false');
+          });
+          saveFilter();
+          paint();
+        });
+      }
+      if(TAGS){
+        wireSeg('stage',   v=>{ fStage   = v || null; });
+        wireSeg('product', v=>{ fProduct = v || null; });
+      }
+
       const paint = ()=>{
         const term = (q.value||'').trim();
         const lc = term.toLowerCase();
         x.style.display = term ? '' : 'none';
-        let groups = bank.map((g,i)=>({i,g})).filter(o=> catFilter===null || o.i===catFilter);
+        // фильтр по тегам (этап ∩ продукт); null → без ограничения
+        const allow = allowedCats(fStage, fProduct);
+        let groups = bank.map((g,i)=>({i,g}))
+          .filter(o=> catFilter===null || o.i===catFilter)
+          .filter(o=> allow===null || allow.has(o.g.cat));
         let shownResp = 0;
         groups = groups.map(({i,g})=>{
           const catHit = g.cat.toLowerCase().includes(lc);
@@ -597,18 +691,22 @@ SensorApp.register({
           return { cat:g.cat, items, catHit };
         }).filter(g=>g.items.length);
 
-        countEl.textContent = term
+        const filtered = !!term || catFilter!==null || (allow!==null);
+        countEl.textContent = filtered
           ? `Найдено ${shownResp} ответ${plural(shownResp,'','а','ов')} в ${groups.length} категори${plural(groups.length,'и','ях','ях')}`
           : `${bank.reduce((a,g)=>a+g.responses.length,0)} готовых ответов в ${bank.length} категориях`;
 
         if(!groups.length){
-          listEl.innerHTML = U.empty('🔍','Ничего не найдено по «'+esc(term)+'».',
-            `<button class="btn sm" id="obj-clear2">Сбросить поиск</button>`);
-          const c2 = listEl.querySelector('#obj-clear2'); if(c2) c2.onclick = ()=>{ q.value=''; catFilter=null; chipsEl.querySelectorAll('.pill').forEach((p,idx)=>p.classList.toggle('active',idx===0)); paint(); };
+          const msg = term
+            ? 'Ничего не найдено по «'+esc(term)+'».'
+            : 'Под выбранный фильтр (этап/продукт) возражений не нашлось.';
+          listEl.innerHTML = U.empty('🔍', msg,
+            `<button class="btn sm" id="obj-clear2">Сбросить фильтры</button>`);
+          const c2 = listEl.querySelector('#obj-clear2'); if(c2) c2.onclick = ()=>resetAll();
           return;
         }
         listEl.innerHTML = groups.map(g=>
-          `<div style="margin:14px 0 5px"><span class="badge err">${highlight(g.cat, lc)}</span></div>
+          `<div style="margin:14px 0 5px"><span class="badge err">${highlight(g.cat, lc)}</span>${catTagBadges(g.cat)}</div>
            <div style="display:grid;gap:5px">${
              g.items.map(it=>
                `<div class="obj-row" style="display:flex;gap:9px;align-items:flex-start;padding:6px 9px;border:1px solid var(--line);border-radius:var(--radius-xs);transition:border-color var(--t-fast) var(--ease),background var(--t-fast) var(--ease)">
@@ -619,6 +717,23 @@ SensorApp.register({
            }</div>`).join('');
         listEl.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>U.copy(b.dataset.copy,'Ответ скопирован ✓'));
       };
+
+      // полный сброс: поиск, чип-категория и сегмент-фильтры этап/продукт
+      function resetAll(){
+        q.value=''; catFilter=null;
+        chipsEl.querySelectorAll('.pill').forEach((p,idx)=>p.classList.toggle('active',idx===0));
+        if(TAGS){
+          fStage=null; fProduct=null; saveFilter();
+          ['stage','product'].forEach(k=>{
+            const row = body.querySelector('#obj-seg-'+k); if(!row) return;
+            row.querySelectorAll('.pill').forEach((p,idx)=>{
+              const on = idx===0; p.classList.toggle('active', on);
+              p.setAttribute('aria-selected', on?'true':'false');
+            });
+          });
+        }
+        paint();
+      }
 
       const deb = U.debounce(paint, 90);
       q.addEventListener('input', deb);

@@ -152,7 +152,20 @@ SensorApp.register({
       { key:'work',     label:'Вид работ',                 ph:'Монтаж, ТО и ремонт средств обеспечения пожарной безопасности', full:true }
     ];
 
-    let state = { form:'ООО', docType: docTypes[0] && docTypes[0].id, tpl:null, tplName:'', tokens:[], docFilter:'', docValues:{} };
+    let state = { form:'ООО', docType: docTypes[0] && docTypes[0].id, tpl:null, tplName:'', tokens:[], docFilter:'', docValues:{},
+      // P19: типографика предпросмотра/документа.
+      //   global  — шрифт/размер/начертание для всего документа;
+      //   perField[token] — переопределение для конкретного поля (выбирается на «бумаге»).
+      typography:{ global:{ font:'Times New Roman', sizePt:12, bold:false, italic:false }, perField:{} },
+      focusTok:null   // активное поле в панели по-польной типографики
+    };
+
+    /* движок WYSIWYG (вендорный, загружен из js/wysiwyg.js). В jsdom доступен как стаб. */
+    const Docx = (typeof window !== 'undefined' && window.SensorDocx && typeof window.SensorDocx === 'object') ? window.SensorDocx : null;
+    function docxAvail(){ try { return Docx && typeof Docx.available === 'function' ? Docx.available() : { preview:false, build:false }; } catch(e){ return { preview:false, build:false }; } }
+    const DOCX_FONTS = (Docx && Array.isArray(Docx.FONTS) && Docx.FONTS.length) ? Docx.FONTS : ['Times New Roman','Arial','Calibri','Verdana','Tahoma','Georgia','Courier New'];
+    const DOCX_SIZES = (Docx && Array.isArray(Docx.SIZES) && Docx.SIZES.length) ? Docx.SIZES : [8,9,10,11,12,13,14,16,18];
+    let previewHandle = null;   // живой handle из SensorDocx.renderPreview()
 
     /* ====================================================================
        3. РАЗМЕТКА
@@ -189,6 +202,11 @@ SensorApp.register({
       U.card('Поля документа',
         'Поля встроенного шаблона выбранного типа. Реквизиты {ORG_*}/{IP_*} подтягиваются из блока «Реквизиты» (в т.ч. по ИНН через DaData); остальные заполните вручную.',
         `<div id="doc-fields-wrap"></div>`) +
+
+      U.card('Предпросмотр (как на бумаге)',
+        'Реальный вид встроенного бланка с подсветкой полей. Кликните поле на «бумаге», чтобы перейти к нему в форме. Значения подставляются вживую; типографику можно задать глобально и по каждому полю.',
+        `<div id="lic-typo-panel"></div>
+         <div id="lic-paper" class="lic-paper" aria-label="Предпросмотр документа на бумаге" style="margin-top:12px;max-height:560px;overflow:auto;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius-s);padding:14px"></div>`) +
 
       U.card('Свой шаблон документа (необязательно)',
         'Загрузите .docx с полями вида {ОРГАНИЗАЦИЯ}, {ИНН}, {АДРЕС} — заполним их данными формы. Без шаблона соберём аккуратный текстовый документ.',
@@ -239,6 +257,8 @@ SensorApp.register({
     const passportEl = root.querySelector('#lic-passport');
     const docFieldsWrap = root.querySelector('#doc-fields-wrap');
     const genPkgBtn  = root.querySelector('#lic-gen-pkg');
+    const typoPanel  = root.querySelector('#lic-typo-panel');
+    const paperEl    = root.querySelector('#lic-paper');
 
     /* ====================================================================
        4. ТИПЫ ДОКУМЕНТОВ: фильтр + селект + мета
@@ -264,6 +284,7 @@ SensorApp.register({
         : `${all.length} для ${state.form}`;
       updateDocMeta();
       renderDocFields();
+      renderPaper();
     }
     function updateDocMeta(){
       const dt = docTypes.find(d => d.id === state.docType);
@@ -272,7 +293,7 @@ SensorApp.register({
       docMeta.innerHTML = `Выбран: <strong>${E(dt.name)}</strong> · доступен для ${dt.forms.map(f=>E(f)).join(' и ')}.`
         + (real ? ` <span class="badge ok dot" title="генерация из встроенного .docx-бланка">реальный шаблон</span>` : '');
     }
-    sel.addEventListener('change', () => { state.docType = sel.value; updateDocMeta(); renderDocFields(); renderPassport(); });
+    sel.addEventListener('change', () => { state.docType = sel.value; state.focusTok = null; updateDocMeta(); renderDocFields(); renderPaper(); renderPassport(); });
     docFilter.addEventListener('input', U.debounce(() => { state.docFilter = docFilter.value; fillTypes(); }, 140));
 
     /* ====================================================================
@@ -325,7 +346,7 @@ SensorApp.register({
       });
       fieldsForForm().forEach(f => {
         const inp = reqWrap.querySelector(`[data-key="${f.key}"]`);
-        if (inp) inp.addEventListener('input', U.debounce(updateCompleteness, 120));
+        if (inp) inp.addEventListener('input', U.debounce(() => { updateCompleteness(); livePreviewValues(); }, 120));
       });
       runValidation(); updateCompleteness();
     }
@@ -341,7 +362,12 @@ SensorApp.register({
     /* ====================================================================
        7. ВАЛИДАЦИЯ ИНН / ОГРН / КПП (контрольные суммы)
        ==================================================================== */
-    function innChecksum(inn){
+    // Контрольные суммы ИНН / ОГРН / ОГРНИП — единый источник:
+    // window.SensorValidators (._innChecksum для ИНН, .ogrn/.ogrnip для ОГРН/ОГРНИП).
+    // Локальные алгоритмы оставлены как фолбэк строго на случай, когда библиотека
+    // недоступна (изоляция в каком-то тесте). Длина/формат и тексты сообщений
+    // остаются в checkInn/checkOgrn без изменений — берём только вердикт (boolean).
+    function innChecksumLocal(inn){
       const d = inn.split('').map(Number);
       const k = w => w.reduce((s, wi, i) => s + wi * d[i], 0) % 11 % 10;
       if (inn.length === 10) return d[9] === k([2,4,10,3,5,9,4,6,8]);
@@ -352,8 +378,13 @@ SensorApp.register({
       }
       return false;
     }
+    function innChecksum(inn){
+      const V = (typeof window !== 'undefined') && window.SensorValidators;
+      if (V && typeof V._innChecksum === 'function') return V._innChecksum(inn);
+      return innChecksumLocal(inn);
+    }
     // ОГРН (13) и ОГРНИП (15): последняя цифра = (число без неё) mod (len-2) mod 10
-    function ogrnChecksum(ogrn){
+    function ogrnChecksumLocal(ogrn){
       if (!/^\d+$/.test(ogrn)) return false;
       if (ogrn.length === 13){
         const ctrl = Number(BigIntSafe(ogrn.slice(0, 12)) % 11n % 10n);
@@ -364,6 +395,16 @@ SensorApp.register({
         return ctrl === Number(ogrn[14]);
       }
       return false;
+    }
+    function ogrnChecksum(ogrn){
+      const V = (typeof window !== 'undefined') && window.SensorValidators;
+      if (V && typeof V.ogrn === 'function' && typeof V.ogrnip === 'function'){
+        const s = String(ogrn == null ? '' : ogrn);
+        if (s.length === 13) return V.ogrn(s).ok;
+        if (s.length === 15) return V.ogrnip(s).ok;
+        return false; // прочие длины — как в локальном алгоритме
+      }
+      return ogrnChecksumLocal(ogrn);
     }
     function BigIntSafe(s){ try { return BigInt(s); } catch(e){ return 0n; } }
 
@@ -550,7 +591,7 @@ SensorApp.register({
     root.querySelector('#lic-demo').addEventListener('click', () => {
       const d = DEMO[state.form] || DEMO['ООО'];
       setVals(Object.assign(Object.fromEntries(FIELDS.map(f => [f.key, ''])), d));
-      runValidation(); updateCompleteness(); renderDocFields();
+      runValidation(); updateCompleteness(); renderDocFields(); livePreviewValues();
       ctx.toast('Подставлен демо-образец реквизитов', 'info');
     });
 
@@ -567,7 +608,7 @@ SensorApp.register({
       const map = { name:d.name, inn:d.inn, ogrn:d.ogrn, kpp:d.kpp, address:d.address, director:d.manager };
       Object.keys(map).forEach(k => { if (map[k] == null) delete map[k]; });
       setVals(map);
-      runValidation(); updateCompleteness(); renderDocFields();
+      runValidation(); updateCompleteness(); renderDocFields(); livePreviewValues();
     }
 
     /* ====================================================================
@@ -712,6 +753,7 @@ SensorApp.register({
           const tk = inp.dataset.tok;
           if (String(inp.value).length) state.docValues[tk] = inp.value;
           else delete state.docValues[tk];
+          livePreviewValues();   // P19: правка значения → текст на «бумаге» меняется
         }, 120));
       });
       // показать кнопку пакетной генерации, если у формы есть встроенные шаблоны
@@ -719,6 +761,179 @@ SensorApp.register({
         const m = tplMapFor(state.form);
         genPkgBtn.style.display = (m && Object.keys(m).length) ? '' : 'none';
       }
+    }
+
+    /* ====================================================================
+       10c. P19 — ПРЕДПРОСМОТР «КАК НА БУМАГЕ» + ТИПОГРАФИКА (window.SensorDocx)
+       Карточка с реальным рендером встроенного бланка, подсветкой полей,
+       живым заполнением и панелью типографики (глобально + по-польно).
+       Безопасно деградирует, если SensorDocx.available().preview === false
+       (нет docx-preview/jsdom) — показывает заметку, остальной модуль работает.
+       ==================================================================== */
+    // текущий встроенный b64-шаблон выбранного типа (или null)
+    function currentBuiltinEntry(){
+      const dt = docTypes.find(d => d.id === state.docType);
+      const e = dt && dt.builtin ? tplEntry(state.form, dt.id) : null;
+      return (e && e.b64) ? e : null;
+    }
+    // значения по токенам (реквизиты + ручные поля) — те же, что идут в генерацию
+    function previewValues(){
+      const dt = docTypes.find(d => d.id === state.docType);
+      return (dt && dt.builtin) ? builtinValues(state.form, dt.id) : {};
+    }
+    // <option>-список для select типографики
+    function optList(items, sel, fmt){
+      return items.map(it => {
+        const val = fmt ? String(it) : String(it);
+        return `<option value="${E(val)}"${String(sel)===String(it)?' selected':''}>${E(fmt?fmt(it):it)}</option>`;
+      }).join('');
+    }
+    // отрисовать панель типографики (глобально + по выбранному полю)
+    function renderTypoPanel(){
+      if (!typoPanel) return;
+      const avail = docxAvail();
+      if (!currentBuiltinEntry()){
+        typoPanel.innerHTML = `<p class="hint">У выбранного типа нет встроенного .docx-бланка — предпросмотр «как на бумаге» доступен только для реальных шаблонов «Спарты».</p>`;
+        return;
+      }
+      const g = state.typography.global;
+      const focus = state.focusTok;
+      const flds = currentBuiltinFields() || [];
+      const focusLabel = (() => { const f = flds.find(x => norm(x.token) === focus); return f ? (f.label || f.token) : (focus || ''); })();
+      const pf = (focus && state.typography.perField[focus]) || {};
+      const fieldOpts = `<option value="">— весь документ —</option>` +
+        flds.map(f => `<option value="${E(norm(f.token))}"${norm(f.token)===focus?' selected':''}>${E(f.label || f.token)}</option>`).join('');
+
+      typoPanel.innerHTML =
+        `<div class="grid cols-2" style="gap:10px 16px">
+           <div class="field">
+             <label for="typo-g-font">Шрифт (весь документ)</label>
+             <select id="typo-g-font" aria-label="Шрифт документа">${optList(DOCX_FONTS, g.font)}</select>
+           </div>
+           <div class="field">
+             <label for="typo-g-size">Размер, pt (весь документ)</label>
+             <select id="typo-g-size" aria-label="Размер шрифта документа">${optList(DOCX_SIZES, g.sizePt, n => n + ' pt')}</select>
+           </div>
+         </div>
+         <div class="btn-row" style="margin:2px 0 12px">
+           <button type="button" class="btn ghost sm${g.bold?' active':''}" id="typo-g-bold" aria-pressed="${!!g.bold}" title="Жирный (весь документ)"><b>Ж</b></button>
+           <button type="button" class="btn ghost sm${g.italic?' active':''}" id="typo-g-italic" aria-pressed="${!!g.italic}" title="Курсив (весь документ)"><i>К</i></button>
+         </div>
+         <div class="divider"></div>
+         <div class="field">
+           <label for="typo-field">Типографика поля</label>
+           <select id="typo-field" aria-label="Поле для индивидуальной типографики">${fieldOpts}</select>
+         </div>` +
+        (focus
+          ? `<div class="grid cols-2" style="gap:10px 16px">
+               <div class="field">
+                 <label for="typo-f-font">Шрифт поля «${E(focusLabel)}»</label>
+                 <select id="typo-f-font" aria-label="Шрифт поля"><option value="">как в документе</option>${optList(DOCX_FONTS, pf.font || '')}</select>
+               </div>
+               <div class="field">
+                 <label for="typo-f-size">Размер поля, pt</label>
+                 <select id="typo-f-size" aria-label="Размер шрифта поля"><option value="">как в документе</option>${optList(DOCX_SIZES, pf.sizePt || '', n => n + ' pt')}</select>
+               </div>
+             </div>
+             <div class="btn-row" style="margin-top:2px">
+               <button type="button" class="btn ghost sm${pf.bold?' active':''}" id="typo-f-bold" aria-pressed="${!!pf.bold}" title="Жирный (поле)"><b>Ж</b></button>
+               <button type="button" class="btn ghost sm${pf.italic?' active':''}" id="typo-f-italic" aria-pressed="${!!pf.italic}" title="Курсив (поле)"><i>К</i></button>
+               <button type="button" class="btn ghost sm" id="typo-f-reset" style="margin-left:auto" title="Сбросить типографику поля">Сбросить поле</button>
+             </div>`
+          : `<p class="hint" style="margin:6px 0 0">Выберите поле выше или кликните его на «бумаге», чтобы задать индивидуальный шрифт/размер/начертание.</p>`) +
+        (!avail.preview ? `<p class="hint" style="margin-top:10px">Визуальный рендер недоступен в этой среде — значения и типографика всё равно учитываются при генерации .docx.</p>` : '');
+
+      // --- глобальная типографика ---
+      const gFont = typoPanel.querySelector('#typo-g-font');
+      const gSize = typoPanel.querySelector('#typo-g-size');
+      if (gFont) gFont.addEventListener('change', () => { state.typography.global.font = gFont.value; livePreviewTypo(); });
+      if (gSize) gSize.addEventListener('change', () => { state.typography.global.sizePt = Number(gSize.value); livePreviewTypo(); });
+      const gB = typoPanel.querySelector('#typo-g-bold');
+      const gI = typoPanel.querySelector('#typo-g-italic');
+      if (gB) gB.addEventListener('click', () => { state.typography.global.bold = !state.typography.global.bold; renderTypoPanel(); livePreviewTypo(); });
+      if (gI) gI.addEventListener('click', () => { state.typography.global.italic = !state.typography.global.italic; renderTypoPanel(); livePreviewTypo(); });
+
+      // --- выбор поля ---
+      const fSel = typoPanel.querySelector('#typo-field');
+      if (fSel) fSel.addEventListener('change', () => { state.focusTok = fSel.value || null; renderTypoPanel(); });
+
+      // --- по-польная типографика ---
+      function ensurePF(){ if (!state.typography.perField[focus]) state.typography.perField[focus] = {}; return state.typography.perField[focus]; }
+      function cleanPF(){ const p = state.typography.perField[focus]; if (p && !p.font && !p.sizePt && !p.bold && !p.italic) delete state.typography.perField[focus]; }
+      const fFont = typoPanel.querySelector('#typo-f-font');
+      const fSize = typoPanel.querySelector('#typo-f-size');
+      if (fFont) fFont.addEventListener('change', () => { const p = ensurePF(); if (fFont.value) p.font = fFont.value; else delete p.font; cleanPF(); livePreviewTypo(); });
+      if (fSize) fSize.addEventListener('change', () => { const p = ensurePF(); if (fSize.value) p.sizePt = Number(fSize.value); else delete p.sizePt; cleanPF(); livePreviewTypo(); });
+      const fB = typoPanel.querySelector('#typo-f-bold');
+      const fI = typoPanel.querySelector('#typo-f-italic');
+      if (fB) fB.addEventListener('click', () => { const p = ensurePF(); p.bold = !p.bold; if (!p.bold) delete p.bold; cleanPF(); renderTypoPanel(); livePreviewTypo(); });
+      if (fI) fI.addEventListener('click', () => { const p = ensurePF(); p.italic = !p.italic; if (!p.italic) delete p.italic; cleanPF(); renderTypoPanel(); livePreviewTypo(); });
+      const fR = typoPanel.querySelector('#typo-f-reset');
+      if (fR) fR.addEventListener('click', () => { delete state.typography.perField[focus]; renderTypoPanel(); livePreviewTypo(); });
+    }
+
+    // полный (пере)рендер «бумаги» — зовётся при смене типа/формы
+    function renderPaper(){
+      if (!paperEl) return;
+      // снять старый handle (если был)
+      if (previewHandle && typeof previewHandle.destroy === 'function'){ try { previewHandle.destroy(); } catch(e){} }
+      previewHandle = null;
+      const entry = currentBuiltinEntry();
+      if (!entry){
+        paperEl.innerHTML = '';
+        const note = document.createElement('p');
+        note.className = 'hint';
+        note.style.margin = '0';
+        note.textContent = 'Предпросмотр «как на бумаге» доступен для встроенных .docx-бланков «Спарты». Выберите тип с отметкой о встроенном бланке.';
+        paperEl.appendChild(note);
+        renderTypoPanel();
+        return;
+      }
+      renderTypoPanel();
+      if (!Docx || typeof Docx.renderPreview !== 'function'){
+        paperEl.innerHTML = '';
+        const note = document.createElement('p');
+        note.className = 'hint'; note.style.margin = '0';
+        note.textContent = 'Движок предпросмотра недоступен. Документ всё равно можно сгенерировать.';
+        paperEl.appendChild(note);
+        return;
+      }
+      // отрисовать через движок; промис — безопасно деградирует на стабе.
+      try {
+        Promise.resolve(Docx.renderPreview({
+          b64: entry.b64,
+          container: paperEl,
+          values: previewValues(),
+          typography: state.typography,
+          onField: (token) => focusFormField(token)
+        })).then(h => { previewHandle = h; }).catch(() => {});
+      } catch(e){ /* движок не должен ронять модуль */ }
+    }
+
+    // живое обновление значений (без полного ре-рендера)
+    function livePreviewValues(){
+      if (previewHandle && typeof previewHandle.update === 'function'){
+        try { previewHandle.update({ values: previewValues() }); } catch(e){}
+      }
+      renderPassport();
+    }
+    // живое обновление типографики
+    function livePreviewTypo(){
+      if (previewHandle && typeof previewHandle.update === 'function'){
+        try { previewHandle.update({ typography: state.typography }); } catch(e){}
+      }
+    }
+    // клик по полю на «бумаге» → сфокусировать соответствующее поле формы и панель
+    function focusFormField(token){
+      const tk = norm(token);
+      const inp = docFieldsWrap && docFieldsWrap.querySelector(`[data-tok="${(window.CSS && CSS.escape) ? CSS.escape(tk) : tk}"]`);
+      if (inp && typeof inp.focus === 'function'){
+        try { inp.scrollIntoView && inp.scrollIntoView({ block:'center' }); } catch(e){}
+        try { inp.focus(); } catch(e){}
+      }
+      // также подставить токен в панель по-польной типографики
+      const flds = currentBuiltinFields() || [];
+      if (flds.some(f => norm(f.token) === tk)){ state.focusTok = tk; renderTypoPanel(); }
     }
 
     /* ====================================================================
@@ -797,7 +1012,7 @@ SensorApp.register({
       root.querySelector('#lookup-note').style.display = 'none';
       previewEmpty();
       renderDocFields();
-      runValidation(); updateCompleteness();
+      runValidation(); updateCompleteness(); livePreviewValues();
       ctx.toast('Форма очищена', 'info');
     });
 
@@ -830,13 +1045,29 @@ SensorApp.register({
       const builtin = dt && dt.builtin ? tplEntry(state.form, dt.id) : null;
 
       if (builtin && builtin.b64){
-        // ПРИОРИТЕТ — встроенный реальный шаблон Спарты
-        try {
-          const u8 = renderBuiltin(builtin, builtinValues(state.form, dt.id));
-          const blob = new Blob([u8], { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-          U.download(base + '.docx', blob);
-          ctx.toast('Документ из встроенного шаблона сгенерирован ✓', 'ok');
-        } catch (err){ ctx.toast('Ошибка генерации встроенного шаблона: ' + (err && err.message || err), 'err'); }
+        // ПРИОРИТЕТ — встроенный реальный шаблон Спарты.
+        // P19: если движок умеет build — собираем через SensorDocx.buildDocx
+        // (типографика global+perField попадает в .docx). Иначе — прежний путь
+        // renderBuiltin (PizZip→docxtemplater) как фолбэк.
+        const values = builtinValues(state.form, dt.id);
+        const fallback = () => {
+          try {
+            const u8 = renderBuiltin(builtin, values);
+            const blob = new Blob([u8], { type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+            U.download(base + '.docx', blob);
+            ctx.toast('Документ из встроенного шаблона сгенерирован ✓', 'ok');
+          } catch (err){ ctx.toast('Ошибка генерации встроенного шаблона: ' + (err && err.message || err), 'err'); }
+        };
+        if (Docx && typeof Docx.buildDocx === 'function' && docxAvail().build){
+          Promise.resolve(Docx.buildDocx({ b64: builtin.b64, values, typography: state.typography }))
+            .then(blob => {
+              U.download(base + '.docx', blob);
+              ctx.toast('Документ из встроенного шаблона сгенерирован ✓', 'ok');
+            })
+            .catch(() => fallback());   // движок не справился → прежний путь
+        } else {
+          fallback();
+        }
       } else if (state.tpl){
         try {
           const zip = new PizZip(state.tpl);
@@ -921,7 +1152,26 @@ SensorApp.register({
       const pct = total ? Math.round(n / total * 100) : 0;
       pkgProg.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><div class="bar" style="flex:1"><span style="width:${pct}%"></span></div><span class="mono muted" style="white-space:nowrap">${E(msg || (n + ' из ' + total))}</span></div>`;
     }
-    if (genPkgBtn) genPkgBtn.addEventListener('click', () => {
+    // Blob → Uint8Array (для упаковки в .zip через PizZip). Безопасно в jsdom:
+    // при отсутствии Blob.arrayBuffer() возвращает null → вызывающий уходит в фолбэк.
+    function blobToU8(blob){
+      if (blob && typeof blob.arrayBuffer === 'function'){
+        return blob.arrayBuffer().then(ab => new Uint8Array(ab));
+      }
+      return Promise.resolve(null);
+    }
+    // собрать один документ → Uint8Array. P19: приоритет SensorDocx.buildDocx
+    // (типографика в файле), фолбэк — renderBuiltin (PizZip→docxtemplater).
+    function buildOneU8(entry, values){
+      if (Docx && typeof Docx.buildDocx === 'function' && docxAvail().build){
+        return Promise.resolve(Docx.buildDocx({ b64: entry.b64, values, typography: state.typography }))
+          .then(blob => blobToU8(blob))
+          .then(u8 => u8 != null ? u8 : renderBuiltin(entry, values))
+          .catch(() => renderBuiltin(entry, values));
+      }
+      return Promise.resolve().then(() => renderBuiltin(entry, values));
+    }
+    if (genPkgBtn) genPkgBtn.addEventListener('click', async () => {
       const m = tplMapFor(state.form);
       const ids = m ? Object.keys(m) : [];
       if (!ids.length) return ctx.toast('Для формы «' + state.form + '» нет встроенных шаблонов', 'err');
@@ -934,18 +1184,19 @@ SensorApp.register({
       const total = ids.length;
       setPkgProgress(0, total, 'Подготовка…');
       genPkgBtn.disabled = true;
-      const built = [];                 // {name, content}
+      const built = [];                 // {name, content:Uint8Array}
       const usedNames = {};
       const uniqueName = base => { let n = base, i = 2; while (usedNames[n]){ n = base.replace(/\.docx$/i, '') + ' (' + (i++) + ').docx'; } usedNames[n] = true; return n; };
       try {
-        ids.forEach((docId, i) => {
+        for (let i = 0; i < ids.length; i++){
+          const docId = ids[i];
           const e = m[docId] || {};
           const title = e.name || docId;
           setPkgProgress(i, total, 'Сборка: ' + title + '…');
-          if (!e.b64) return;           // нет тела шаблона — пропускаем
-          const u8 = renderBuiltin(e, builtinValues(state.form, docId));
+          if (!e.b64) continue;         // нет тела шаблона — пропускаем
+          const u8 = await buildOneU8(e, builtinValues(state.form, docId));
           built.push({ name: uniqueName(safeName(title) + '.docx'), content: u8 });
-        });
+        }
         if (!built.length){ setPkgProgress(total, total, ''); return ctx.toast('Не из чего собирать пакет', 'err'); }
         const orgTag = safeName(v.name || state.form);
         if (built.length === 1){
@@ -1002,7 +1253,7 @@ SensorApp.register({
       // повисает над уже другими реквизитами загруженного черновика
       const li = root.querySelector('#lookup-inn'); if (li) li.value = '';
       const ln = root.querySelector('#lookup-note'); if (ln) ln.style.display = 'none';
-      runValidation(); updateCompleteness(); renderDocFields();
+      runValidation(); updateCompleteness(); renderDocFields(); livePreviewValues();
       root.scrollTo ? root.scrollTo({ top:0 }) : null;
       ctx.toast('Черновик «' + (d.title || '') + '» загружен', 'ok');
     }
@@ -1073,6 +1324,7 @@ SensorApp.register({
     fillTypes();
     renderFields();
     renderDocFields();   // после renderFields — чтобы плейсхолдеры подтянули реквизиты
+    renderPaper();       // P19: предпросмотр «как на бумаге» (после полей — значения готовы)
     renderDrafts();
     renderCatalog();
     renderPassport();
